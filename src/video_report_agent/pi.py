@@ -12,6 +12,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
+from .local_models import configure_local_provider
 from .pi_trace import compact_event
 from .report_content import fill_video_description
 from .task_container import (
@@ -255,9 +256,11 @@ class PiRunner:
         generation = None
         config = workspace / ".generation-config"
         try:
+            initialize_pi_config(PI_AGENT_DIR)
+            if self.provider == "local":
+                configure_local_provider(PI_AGENT_DIR / "models.json", self.model)
             if self.isolation == "docker":
                 generation = stage_inputs(workspace)
-                initialize_pi_config(PI_AGENT_DIR)
                 selections = [{"provider": self.provider, "model": self.model,
                                "api_key": self.api_key}]
                 if self.model_recovery:

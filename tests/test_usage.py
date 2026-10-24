@@ -132,6 +132,9 @@ def test_asr_is_fresh_on_cache_hit(tmp_path, monkeypatch):
     asr.write_text('{"backend":"mlx"}')
     assert usage.cached_call_costs(tmp_path, {}, None)["asr_basis"] == "local"
     assert len(asr_reads) == 2
+    asr.write_text('{"backend":"faster-whisper"}')
+    assert usage.cached_call_costs(tmp_path, {}, None)["asr_basis"] == "local"
+    assert len(asr_reads) == 3
     assert "asr_cny_estimate" not in json.loads((tmp_path / "usage.json").read_text())["llm"]
 
 

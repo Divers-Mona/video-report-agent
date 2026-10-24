@@ -1,5 +1,6 @@
 import os
 import sys
+import wave
 
 import pytest
 
@@ -97,6 +98,48 @@ def test_float_noise_at_an_adjacent_boundary_is_not_a_real_overlap() -> None:
     ]
 
 
+def test_faster_whisper_uses_cpu_int8_and_shared_segment_normalizer(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from video_report_agent.asr import FasterWhisperBackend
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    calls = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model, **kwargs):
+            calls["model"] = model
+            calls["options"] = kwargs
+
+        def transcribe(self, path, *, language):
+            calls["path"] = path
+            calls["language"] = language
+            return iter([
+                SimpleNamespace(start=0.0, end=1.25, text=" 第一段 "),
+                SimpleNamespace(start=1.25, end=2.5, text="第二段"),
+            ]), SimpleNamespace(language="zh", language_probability=0.97, duration=2.5)
+
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel)
+    )
+    cache = tmp_path / "model-cache"
+    result = FasterWhisperBackend("small", cache).transcribe(audio)
+
+    assert calls["model"] == "small"
+    assert calls["options"] == {
+        "device": "cpu", "compute_type": "int8", "download_root": str(cache),
+    }
+    assert calls["path"] == str(audio)
+    assert calls["language"] == "zh"
+    assert [(item.start_ms, item.end_ms, item.text) for item in result.segments] == [
+        (0, 1250, " 第一段 "), (1250, 2500, "第二段"),
+    ]
+    assert result.backend == "faster-whisper"
+    assert result.provider == "local"
+    assert result.raw_result["language_probability"] == 0.97
+
+
 def test_material_overlap_still_fails_closed() -> None:
     with pytest.raises(AsrError, match="overlap"):
         normalize_asr_segments(
@@ -105,3 +148,106 @@ def test_material_overlap_still_fails_closed() -> None:
                 {"start": 0.9, "end": 2.0, "text": "第二段"},
             ]
         )
+
+
+def test_faster_whisper_audio_decoder_accepts_small_pcm_wav(tmp_path):
+    audio_module = pytest.importorskip(
+        "faster_whisper.audio", reason="local-asr extra is not installed"
+    )
+    audio_path = tmp_path / "decoder-probe.wav"
+    with wave.open(str(audio_path), "wb") as audio_file:
+        audio_file.setnchannels(1)
+        audio_file.setsampwidth(2)
+        audio_file.setframerate(16_000)
+        audio_file.writeframes(bytes(16_000 // 4 * 2))
+
+    decoded = audio_module.decode_audio(str(audio_path), sampling_rate=16_000)
+
+    assert len(decoded) == 4_000
+
+
+def test_faster_whisper_auto_passes_none_and_records_detected_language(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from video_report_agent.asr import FasterWhisperBackend
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    calls = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model, **kwargs):
+            pass
+
+        def transcribe(self, path, *, language):
+            calls["language"] = language
+            return (
+                iter([SimpleNamespace(start=0.0, end=1.0, text="hello world")]),
+                SimpleNamespace(language="en", language_probability=0.95, duration=1.0),
+            )
+
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel)
+    )
+    result = FasterWhisperBackend("small", tmp_path / "cache").transcribe(audio, "auto")
+
+    assert calls["language"] is None  # auto → None 传给 Whisper 自动检测
+    assert result.language == "en"  # 记录检测出的真实语言，不是传入的 "auto"
+    assert result.raw_result["language"] == "en"
+
+
+def test_faster_whisper_explicit_language_passed_through(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from video_report_agent.asr import FasterWhisperBackend
+
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"audio")
+    calls = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model, **kwargs):
+            pass
+
+        def transcribe(self, path, *, language):
+            calls["language"] = language
+            return (
+                iter([SimpleNamespace(start=0.0, end=1.0, text="bonjour")]),
+                SimpleNamespace(language="fr", language_probability=0.9, duration=1.0),
+            )
+
+    monkeypatch.setitem(
+        sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel)
+    )
+    result = FasterWhisperBackend("small", tmp_path / "cache").transcribe(audio, "fr")
+
+    assert calls["language"] == "fr"  # 显式语言原样传给 Whisper
+    assert result.language == "fr"
+
+
+def test_mlx_auto_passes_none_and_records_detected_language(tmp_path, monkeypatch):
+    from video_report_agent.asr import _transcribe_mlx
+
+    (tmp_path / "mlx_whisper.py").write_text(
+        "def transcribe(audio, **kwargs):\n"
+        "    assert kwargs == dict(path_or_hf_repo='test-model', language=None, verbose=False)\n"
+        "    return {'language': 'en', 'segments': [{'start': 0, 'end': 1, 'text': 'hello'}]}\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    audio = tmp_path / "ok.wav"
+    audio.write_bytes(b"test")
+    result = _transcribe_mlx(audio, model="test-model", language="auto")
+
+    assert result.language == "en"  # mlx-whisper 检测出英语并返回真实语言
+
+
+def test_asr_language_explicit_beats_env_beats_default(monkeypatch):
+    from video_report_agent.media_config import resolve_media_config
+
+    monkeypatch.delenv("ASR_LANGUAGE", raising=False)
+    assert resolve_media_config()["asr_language"] == "zh"
+
+    monkeypatch.setenv("ASR_LANGUAGE", "auto")
+    assert resolve_media_config()["asr_language"] == "auto"
+
+    assert resolve_media_config(asr_language="en")["asr_language"] == "en"

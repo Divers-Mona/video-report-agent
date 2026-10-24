@@ -1,5 +1,9 @@
 # Core 重要设计决策
 
+## 2026-10-03：Windows 本地运行使用 WSL2 与通用本地模型接口
+
+决定：为 Windows 提供 WSL2 Ubuntu CLI 入口，继续使用上游 Linux 进程监督实现；不把 Windows 原生兼容当作本轮目标。报告模型走 Pi 的 `openai-completions` 兼容 provider，运行前从服务 `/models` 发现模型；单模型可自动选择，多模型需显式选择，配置不绑定某个模型名。新增可选 faster-whisper CPU/int8 ASR，避免争用本机报告模型 GPU。工具、Python 环境、缓存与报告产物均位于项目内，FFmpeg/Chromium 所需系统包留在 WSL。依据：[本地部署说明](local-wsl.md)、[架构](ARCHITECTURE.md)。代价：需要 WSL2 Ubuntu 环境；真实报告模型/内容质量不由无推理检查证明。
+
 历史条目由本仓库 Git 与已有记录回填；原始理由和“工程解释”分别标明，未确认的决策日期不推断。当前实现与配置见 [ARCHITECTURE](ARCHITECTURE.md)，未来事项见 [PLAN](PLAN.md)。
 ## 2026-10-11：下载进度干预与可选最终模型
 

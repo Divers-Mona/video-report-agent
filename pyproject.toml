@@ -29,6 +29,11 @@ enhancement = [
 mlx = [
     "mlx-whisper>=0.4.3",
 ]
+local-asr = [
+    # faster-whisper 1.2.1 still passes metadata_errors to av.open; PyAV 19 removed that argument.
+    "av>=11,<19",
+    "faster-whisper>=1.1.1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

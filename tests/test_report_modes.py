@@ -77,6 +77,8 @@ print(json.dumps({"type":"agent_settled"}), flush=True)
 
 def test_cli_passes_mode(tmp_path, monkeypatch):
     captured = []
+    monkeypatch.setattr(cli, "load_dotenv", lambda path: None)
+    monkeypatch.setattr(cli, "resolve_model_selection", lambda model_override=None: None)
     monkeypatch.setattr("sys.argv", [
         "video-report", "--runs", str(tmp_path), "generate", "BV1aTtb6uE7d",
         "--report-mode", "brief",

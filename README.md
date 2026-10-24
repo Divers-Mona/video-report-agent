@@ -100,10 +100,10 @@ my-report/
 
 ## 方式二：运行完整 CLI 流水线
 
-适合从 Bilibili 视频链接开始，自动完成下载、转写和报告生成：
+适合从 Bilibili / YouTube 单视频链接开始，自动完成下载、转写和报告生成：
 
 ```text
-Bilibili URL
+Bilibili / YouTube URL
   → yt-dlp 下载 → FFmpeg 提取音频
   → ASR → 规范转写（正文、来源 ID、时间）
   → Pi RPC + video-report Skill → HTML
@@ -143,6 +143,16 @@ ASR_MODEL=paraformer-v2
 DASHSCOPE_API_KEY=your-dashscope-api-key
 ```
 
+本地 CPU 转写可使用 faster-whisper；首次安装非 WSL 专用环境时执行 `uv sync --extra local-asr`。WSL 用户按[部署说明](docs/local-wsl.md)安装即可。中文和英文使用同一个多语言模型：
+
+```dotenv
+ASR_BACKEND=faster-whisper
+ASR_MODEL=small
+ASR_LANGUAGE=zh
+```
+
+`--asr-language` 指定本次音频的语言，优先于 `ASR_LANGUAGE`；两者都未设置时默认 `zh`。faster-whisper 和 MLX 适配器支持 `auto`（`--asr-language auto` 或 `.env` 的 `ASR_LANGUAGE=auto`），转写时自动检测语言。此参数控制语音识别语言，不控制报告输出语言。paraformer 仍只接受 `zh`。
+
 Apple Silicon 本地转写替换为：
 
 ```dotenv
@@ -150,9 +160,31 @@ ASR_BACKEND=mlx
 ASR_MODEL=mlx-community/whisper-large-v3-turbo
 ```
 
-流水线内置 `mlx` 与 `paraformer` 后端，云端还支持代码已适配的 Fun-ASR 文件转写模型。其他 ASR 可用于独立 Skill 流程；接入本流水线需要对应适配器。云端 ASR 会上传音频，报告模型会接收生成所需的转写内容。
+流水线内置 `mlx`、可选 CPU/int8 `faster-whisper` 与 `paraformer` 后端，云端还支持代码已适配的 Fun-ASR 文件转写模型。其他 ASR 可用于独立 Skill 流程；接入本流水线需要对应适配器。云端 ASR 会上传音频，报告模型会接收生成所需的转写内容。
 
 ### 生成与查看
+
+本地版是命令行工具，不需要单独启动网页服务。使用本地报告模型时，先启动 `PI_BASE_URL` 指向的模型服务。
+
+**Windows PowerShell（已完成 WSL 安装）**
+
+将路径改成你的实际项目目录。每次 `generate` 处理一个视频：
+
+```powershell
+cd D:\Project\video-report-agent
+.\video-report.cmd models
+.\video-report.cmd doctor
+
+# B 站中文视频
+.\video-report.cmd generate "https://www.bilibili.com/video/BV..." --asr-backend faster-whisper --asr-language zh
+
+# YouTube 英文视频（19 秒测试样本）
+.\video-report.cmd generate "https://www.youtube.com/watch?v=jNQXAC9IVRw" --asr-backend faster-whisper --asr-language en
+```
+
+`models` 查看报告模型，`doctor` 检查运行环境；它们不会生成报告。可用 `generate --help` 查看生成参数，或追加 `--report-mode brief` 生成精简速览。默认模式为 `standard`。
+
+**Linux / macOS 的已安装环境**
 
 ```sh
 # 标准阅读
@@ -162,17 +194,27 @@ uv run video-report generate 'https://www.bilibili.com/video/BV...'
 uv run video-report generate 'https://www.bilibili.com/video/BV...' --report-mode brief
 ```
 
+已安装 `local-asr` 依赖时，英文 YouTube 命令为：
+
+```sh
+uv run video-report generate 'https://www.youtube.com/watch?v=jNQXAC9IVRw' --asr-backend faster-whisper --asr-language en
+```
+
+换转写模型使用 `--asr-model medium` 或 `--asr-model large-v3`；`--model` 则选择生成报告的大模型，两者不同。新转写模型首次使用需要下载权重，不需要重装 faster-whisper；缓存后可复用。更大模型通常需要更多内存和 CPU 时间，本次未测试其耗时或准确率。长期默认值可在 `.env` 中设置 `ASR_MODEL` 和 `ASR_LANGUAGE`。
+
 输出目录为 `runs/<run-id>/`，主要阅读产物是 `report.html` 和 `report.png`；`transcript.md` 可用于来源核对。截图失败时 HTML 仍可完成，查看 `status.json` 的 `image_error`，确认 PNG 是否生成。
 
-CLI 默认自动按“作者字幕轨 → B站 ai-zh → ASR”取得文字稿，任一字幕正文可用即停止继续采集。主动指定 `--sources asr` 可只用 ASR；列出多路来源可做手动对照／融合。Web 手动选源只在 Local 高级设置开放，OCR 暂时关闭。Core 仍兼容旧的 `--transcript-mode fused` 字幕/OCR 调用，需要安装 `uv sync --extra enhancement`；本地 MLX 同时加 `--extra mlx`。登录配置及仅转写命令见[选源说明](docs/subtitle-sources.md)，完整参数见 `uv run video-report generate --help`。
+Bilibili 的 CLI 默认自动按“作者字幕轨 → B站 ai-zh → ASR”取得文字稿，任一字幕正文可用即停止继续采集。YouTube 的 auto 模式直接使用 ASR，不支持选择 subtitle_track 或 bilibili_ai。主动指定 `--sources asr` 可只用 ASR；列出多路来源可做手动对照／融合。Web 手动选源只在 Local 高级设置开放，OCR 暂时关闭。Core 仍兼容旧的 `--transcript-mode fused` 字幕/OCR 调用，需要安装 `uv sync --extra enhancement`；本地 MLX 同时加 `--extra mlx`。登录配置及仅转写命令见[选源说明](docs/subtitle-sources.md)，完整参数见 `uv run video-report generate --help`。
+
+2026-10-19 在原有 WSL2 环境使用 faster-whisper `small` / CPU / INT8、显式 `en` 和本地报告模型，完整处理了 19 秒英文视频《Me at the zoo》，生成英文转写、中文 HTML 报告和 PNG。该样本首句存在误识别，且影响了报告表述；此实测证明处理流程可完成，不代表转写完全准确，也不代表其他语言均已验证。详见 [WSL 实测说明](docs/local-wsl.md#英文视频实测)。
 
 ## 运行与数据约定
 
 - **存储**：独立 CLI 默认使用 `runs/state.sqlite3`，保存任务、转写、报告 HTML 与缓存等结构化数据。任务目录里的 JSON、转写和 HTML 是执行导出；媒体、PNG、Pi 会话和诊断日志仍存文件。详见 [SQLite 存储](docs/sqlite-storage.md)。
-- **配置**：从工作目录读取 `.env`，进程环境变量优先。Pi 配置保存在工作目录的 `config/pi/`，缺失的模型默认配置会初始化，已有配置保留。其他目录通过启动前的 `PI_CODING_AGENT_DIR` 指定。不要提交凭证。
+- **配置**：从项目根目录读取 `.env`，进程环境变量优先。Pi 配置保存在工作目录的 `config/pi/`，缺失的模型默认配置会初始化，已有配置保留。其他目录通过启动前的 `PI_CODING_AGENT_DIR` 指定。不要提交凭证。
 - **隔离**：示例使用 `PI_TASK_ISOLATION=local`，Pi 工具拥有本机用户权限。Docker 模式需要应用镜像、Docker daemon 与同一 scope 的健康 task cleaner；选用后失败不会退回本地执行。详见 [Core 架构](docs/ARCHITECTURE.md)。
 - **追踪**：`run.trace.jsonl` 记录流水线阶段，`pi.events.jsonl` 记录 Agent 模型与工具事件。完成需等待 `agent_settled`、最终 assistant `stopReason == "stop"`，并通过 HTML 交付检查。
-- **边界**：内置视频入口面向公开 Bilibili 视频，不提供登录或私有视频访问。视频上限 5 小时，执行期限 30 分钟；本地停止后已提交的云 ASR 仍可能继续计费。默认只理解转写，画面中的非语音信息可能缺失。完整流水线的原生 Windows 运行未在此作为已验证方案。
+- **边界**：内置视频入口支持公开 Bilibili 和 YouTube 单视频，不提供登录、私有视频访问或播放列表批处理。YouTube 接受 watch、youtu.be 和 shorts 链接。视频上限 5 小时，执行期限 30 分钟；本地停止后已提交的云 ASR 仍可能继续计费。默认只理解转写，画面中的非语音信息可能缺失。Windows 使用 [WSL2 CLI 入口](docs/local-wsl.md)；原生 Windows 运行未作为已验证方案。
 
 ## 开发与进一步阅读
 

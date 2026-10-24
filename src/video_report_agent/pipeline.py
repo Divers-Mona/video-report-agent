@@ -15,7 +15,7 @@ from .asr import AsrError, transcribe_audio
 from .audio import AudioExtractionError, extract_audio
 from .bilibili_subtitles import SubtitleError, fetch_subtitles, validate_sources
 from .failures import asr_failure
-from .ingest import UrlIngestError, download_bilibili_video, validate_bilibili_url
+from .ingest import UrlIngestError, download_bilibili_video, resolve_source
 from .media_config import resolve_media_config
 from .paraformer import CloudAsrError
 from .pi import PiError, PiRunner
@@ -58,6 +58,7 @@ def create_run(
     asr_backend=None,
     asr_model=None,
     ocr_backend=None,
+    asr_language=None,
     database_path=None,
     db=None,
     export=True,
@@ -74,8 +75,11 @@ def create_run(
         raise ValueError("ocr_mode must be off, auto or roi")
     if transcript_mode == "fused" and ocr_mode == "roi":
         parse_roi(ocr_roi)
+    source = resolve_source(url)
     if transcript_sources is not None:
         validate_sources(transcript_sources)
+        if source.platform == "youtube" and any(s != "asr" for s in transcript_sources):
+            raise ValueError("YouTube 仅支持 ASR，不能选择 subtitle_track 或 bilibili_ai")
         if ocr_mode != "off":
             raise ValueError("自选文字稿来源暂不启用 OCR")
         if (
@@ -92,12 +96,12 @@ def create_run(
             asr_backend,
             asr_model,
             ocr_backend,
+            asr_language,
             require_credentials=transcript_mode != "auto",
         )
         if transcript_sources is None or "asr" in transcript_sources
         else {}
     )
-    source = validate_bilibili_url(url)
     run = root.resolve() / uuid.uuid4().hex
     metadata = {
         **({"model_selection": model_selection} if model_selection else {}),
@@ -190,8 +194,11 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
             }
             return True
 
-        source = validate_bilibili_url(metadata["url"])
-        if automatic or (selected and (not needs_asr or any(s != "asr" for s in selected))):
+        source = resolve_source(metadata["url"])
+        subtitle_snapshot = {"sources": {}}
+        if source.platform == "bilibili" and (
+            automatic or (selected and (not needs_asr or any(s != "asr" for s in selected)))
+        ):
             update("TRANSCRIBING")
             requested = (
                 ["subtitle_track", "bilibili_ai"]
@@ -256,6 +263,7 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
                     metadata["asr_backend"],
                     metadata["asr_model"],
                     metadata["ocr_backend"],
+                    metadata["asr_language"],
                 )
         snapshot = store.cache("download", cache_key("download", metadata))
         if snapshot and snapshot["state"] == "READY":
@@ -286,7 +294,7 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
             if transcript_source is None and needs_asr:
                 update("DOWNLOADING")
                 with trace.span("download", input={"video_id": metadata["video_id"]}) as detail:
-                    source = validate_bilibili_url(metadata["url"])
+                    source = resolve_source(metadata["url"])
                     request_subtitles = metadata.get("transcript_mode") == "fused"
                     audio_only = (
                         bool(selected) or metadata.get("transcript_mode", "asr-only") == "asr-only"
