@@ -25,6 +25,15 @@ _MEDIA_SUFFIXES = {
 }
 
 
+def _download_media(path: Path) -> bool:
+    if path.suffix in _MEDIA_SUFFIXES:
+        return True
+    stem, marker, tail = path.name.partition(".part")
+    return bool(marker) and Path(stem).suffix in _MEDIA_SUFFIXES and (
+        not tail or (tail.startswith("-Frag") and tail.removeprefix("-Frag").isdigit())
+    )
+
+
 def cleanup_media(root: Path, *, database_path=None) -> None:
     """Keep terminal runs' media for seven days by default; zero disables a limit."""
     try:
@@ -39,6 +48,8 @@ def cleanup_media(root: Path, *, database_path=None) -> None:
         terminal = []
         with store.read() as db:
             for row in db.execute("SELECT workspace,status_json,updated_at FROM runs"):
+                if Path(row["workspace"]).resolve().parent != root.resolve():
+                    continue
                 status = json.loads(row["status_json"])
                 if status.get("state") in TERMINAL:
                     terminal.append(
@@ -57,7 +68,7 @@ def cleanup_media(root: Path, *, database_path=None) -> None:
             download = run / "download"
             if not download.is_symlink():
                 paths.extend(
-                    path for path in download.glob("source*") if path.suffix in _MEDIA_SUFFIXES
+                    path for path in download.glob("source*") if _download_media(path)
                 )
             for path in paths:
                 try:

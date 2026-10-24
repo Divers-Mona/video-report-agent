@@ -5,18 +5,27 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import time
 import traceback
 import uuid
 from pathlib import Path
 
-from .asr import AsrError, transcribe_audio
+from .asr import AsrError, AsrModelMissingError, transcribe_audio
 from .audio import AudioExtractionError, extract_audio
 from .bilibili_subtitles import SubtitleError, fetch_subtitles, validate_sources
 from .failures import asr_failure
 from .ingest import UrlIngestError, download_audio_only, download_bilibili_video, resolve_source
 from .media_config import resolve_media_config
+from .media_limits import (
+    MediaLimitError,
+    check_disk,
+    check_duration,
+    check_file_size,
+    limits_for_run,
+    resolve_media_limits,
+)
 from .paraformer import CloudAsrError
 from .pi import PiError, PiRunner
 from .report_image import render_report_image
@@ -40,6 +49,45 @@ def write_json(path: Path, data: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2))
     temporary.replace(path)
+
+
+def _audio_budget(run: Path, media: Path, metadata: dict) -> None:
+    limits = limits_for_run(run)
+    check_file_size(media.stat().st_size, limits)
+    info_path = run / "download/source.info.json"
+    info = json.loads(info_path.read_text()) if info_path.is_file() else {}
+    duration = info.get("duration") or metadata.get("duration_ms", 0) / 1000
+    if duration:
+        check_duration(duration, limits)
+    # Mono 16 kHz PCM16 plus a header allowance; no media is deleted to make room.
+    estimated = math.ceil(duration * 32_000) + 4096 if duration else 0
+    check_disk(run, limits, additional_bytes=estimated)
+
+
+def _write_transcript_view(run: Path, metadata: dict, status: dict) -> None:
+    manifest = json.loads((run / "transcript-manifest.json").read_text())
+    duration = manifest.get("duration_ms")
+    if duration:
+        check_duration(duration / 1000, limits_for_run(run))
+    lines = [f"# {metadata['title']}", metadata["attribution"], "",
+             f"文字稿状态：{manifest['status']}"]
+    asr_path = run / "asr.json"
+    if asr_path.is_file():
+        payload = json.loads(asr_path.read_text())
+        for field in ("backend", "model", "language"):
+            status["asr_" + field] = payload.get(field) or metadata.get("asr_" + field)
+        lines += [f"转写模型：{status['asr_backend']} / {status['asr_model']}",
+                  f"语言：{status['asr_language']}（请求：{metadata.get('asr_language', 'zh')}）"]
+    if manifest.get("primary_source"):
+        lines.append(f"文字稿主来源：{manifest['primary_source']}")
+    lines.append("")
+    for line in (run / "canonical-transcript.jsonl").read_text().splitlines():
+        unit = json.loads(line)
+        lines.append(
+            f"[{unit['unit_id']} | {unit['start_ms'] / 1000:.3f}–{unit['end_ms'] / 1000:.3f}s] "
+            f"{unit['canonical_text']}"
+        )
+    (run / "transcript.md").write_text("\n".join(lines))
 
 
 def create_run(
@@ -102,11 +150,13 @@ def create_run(
         if transcript_sources is None or "asr" in transcript_sources
         else {}
     )
+    media_limits = resolve_media_limits()
     run = root.resolve() / uuid.uuid4().hex
     metadata = {
         **({"model_selection": model_selection} if model_selection else {}),
         **({"model_recovery": model_recovery} if model_recovery else {}),
         **media_config,
+        "media_limits": media_limits,
         "url": source.canonical_url,
         "video_id": source.video_id,
         "report_mode": report_mode,
@@ -406,8 +456,11 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
                     with trace.span(
                         "ffmpeg", input={"media": downloaded.media_path.name}
                     ) as detail:
+                        _audio_budget(run, downloaded.media_path, metadata)
                         audio = extract_audio(downloaded.media_path, run / "audio.wav")
                         store.artifact(run.name, "audio.wav", run / "audio.wav", "media")
+                        check_duration(audio.probe.duration_ms / 1000, limits_for_run(run))
+                        check_disk(run, limits_for_run(run))
                         detail.update(
                             output={
                                 "audio": audio.path.name,
@@ -478,20 +531,13 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
                     else metadata["duration_ms"],
                     manifest=metadata,
                 )
-                transcript = [f"# {metadata['title']}", metadata["attribution"], ""]
                 if selected:
                     status["transcript_primary_source"] = build.manifest.primary_source
                     status["transcript_source_status"] = build.manifest.source_status
                     status.setdefault(
                         "asr_performed", needs_asr and not bool(status.get("asr_reused_from"))
                     )
-                    transcript += [f"文字稿主来源：{build.manifest.primary_source}", ""]
-                transcript.extend(
-                    f"[{u.unit_id} | {u.start_ms / 1000:.3f}–{u.end_ms / 1000:.3f}s] "
-                    f"{u.canonical_text}"
-                    for u in build.canonical_units
-                )
-                (run / "transcript.md").write_text("\n".join(transcript))
+                _write_transcript_view(run, metadata, status)
                 if validated_transcript(run, metadata) is None:
                     raise ValueError("Transcript is incomplete or incompatible")
                 documents = store.capture(run, execution_id)
@@ -526,6 +572,7 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
                 status["transcript_primary_source"] = manifest.get("primary_source")
                 status["transcript_source_status"] = manifest["source_status"]
                 status["asr_performed"] = False
+            _write_transcript_view(run, metadata, status)
         if metadata.get("transcript_only"):
             update("TRANSCRIPT_READY")
         else:
@@ -565,26 +612,41 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
             category = "EXTERNAL_API_FAILURE"
         elif isinstance(exc, PiError):
             category = exc.category
+        elif isinstance(exc, AsrModelMissingError):
+            category = "MODEL_MISSING"
+        elif isinstance(exc, AsrError):
+            category = "TRANSCRIPTION_FAILED"
+        elif isinstance(exc, MediaLimitError):
+            category = "INPUT_REJECTED"
         elif isinstance(exc, UrlIngestError):
             category = (
-                "ENVIRONMENT_FAILURE" if "unavailable" in str(exc) else "EXTERNAL_API_FAILURE"
+                "ENVIRONMENT_FAILURE" if "unavailable" in str(exc) else "DOWNLOAD_FAILED"
             )
-        elif isinstance(exc, (AsrError, AudioExtractionError, OSError)):
+        elif isinstance(exc, (AudioExtractionError, OSError)):
             category = "ENVIRONMENT_FAILURE"
         else:
             category = "IMPLEMENTATION_FAILURE"
         code, message = category, str(exc)
         diagnostics = {}
-        if isinstance(exc, CloudAsrError):
+        if isinstance(exc, AsrModelMissingError):
+            code = "ASR_MODEL_MISSING"
+        elif isinstance(exc, CloudAsrError):
             code, message = asr_failure(exc)
             diagnostics = {
                 "http_status": exc.http_status,
                 "provider_code": exc.provider_code,
                 "failed_stage": exc.stage,
             }
+        elif isinstance(exc, AsrError):
+            code = "ASR_TRANSCRIPTION_FAILED"
+        elif isinstance(exc, MediaLimitError):
+            code = exc.code
         elif isinstance(exc, UrlIngestError):
             code = exc.category
-            if code in {"VIDEO_DURATION_INVALID", "URL_INVALID"}:
+            if code in {
+                "VIDEO_DURATION_INVALID", "VIDEO_TOO_LONG", "URL_INVALID",
+                "MEDIA_FILE_TOO_LARGE", "MEDIA_DISK_LIMIT",
+            }:
                 category = "INPUT_REJECTED"
             elif code == "DOWNLOAD_ERROR" and str(exc) == "yt-dlp failed":
                 message = "视频下载失败，可能是视频不可访问或下载服务异常，请稍后重试。"

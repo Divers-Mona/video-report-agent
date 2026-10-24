@@ -3,6 +3,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from asr_fixtures import complete_model_directory
+
 from video_report_agent import asr_paths
 from video_report_agent.asr import FasterWhisperBackend
 
@@ -51,13 +53,15 @@ def test_backend_passes_project_rooted_model_and_home_cache_to_faster_whisper(
     home = tmp_path / "home"
     home.mkdir()
     calls = {}
+    complete_model_directory(model)
 
     class FakeWhisperModel:
         def __init__(self, model, **kwargs):
             calls["model"] = model
             calls["options"] = kwargs
 
-        def transcribe(self, _path, *, language):
+        def transcribe(self, _path, *, language, vad_filter):
+            assert vad_filter is True
             calls["language"] = language
             return iter([SimpleNamespace(start=0, end=1, text="路径测试")]), SimpleNamespace(
                 language="zh", duration=1
@@ -78,6 +82,7 @@ def test_backend_passes_project_rooted_model_and_home_cache_to_faster_whisper(
         "device": "cpu",
         "compute_type": "int8",
         "download_root": str(home / "model-cache"),
+        "local_files_only": True,
     }
     assert result.model == "./models/custom"
 

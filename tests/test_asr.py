@@ -3,6 +3,7 @@ import sys
 import wave
 
 import pytest
+from asr_fixtures import provide_faster_whisper_cache
 
 from video_report_agent.asr import AsrError, normalize_asr_segments
 
@@ -112,7 +113,8 @@ def test_faster_whisper_uses_cpu_int8_and_shared_segment_normalizer(tmp_path, mo
             calls["model"] = model
             calls["options"] = kwargs
 
-        def transcribe(self, path, *, language):
+        def transcribe(self, path, *, language, vad_filter):
+            assert vad_filter is True
             calls["path"] = path
             calls["language"] = language
             return iter([
@@ -124,11 +126,13 @@ def test_faster_whisper_uses_cpu_int8_and_shared_segment_normalizer(tmp_path, mo
         sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel)
     )
     cache = tmp_path / "model-cache"
+    directory = provide_faster_whisper_cache(monkeypatch, tmp_path)
     result = FasterWhisperBackend("small", cache).transcribe(audio)
 
-    assert calls["model"] == "small"
+    assert calls["model"] == str(directory)
     assert calls["options"] == {
         "device": "cpu", "compute_type": "int8", "download_root": str(cache),
+        "local_files_only": True,
     }
     assert calls["path"] == str(audio)
     assert calls["language"] == "zh"
@@ -179,7 +183,8 @@ def test_faster_whisper_auto_passes_none_and_records_detected_language(tmp_path,
         def __init__(self, model, **kwargs):
             pass
 
-        def transcribe(self, path, *, language):
+        def transcribe(self, path, *, language, vad_filter):
+            assert vad_filter is True
             calls["language"] = language
             return (
                 iter([SimpleNamespace(start=0.0, end=1.0, text="hello world")]),
@@ -189,6 +194,7 @@ def test_faster_whisper_auto_passes_none_and_records_detected_language(tmp_path,
     monkeypatch.setitem(
         sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel)
     )
+    provide_faster_whisper_cache(monkeypatch, tmp_path)
     result = FasterWhisperBackend("small", tmp_path / "cache").transcribe(audio, "auto")
 
     assert calls["language"] is None  # auto → None 传给 Whisper 自动检测
@@ -209,7 +215,8 @@ def test_faster_whisper_explicit_language_passed_through(tmp_path, monkeypatch):
         def __init__(self, model, **kwargs):
             pass
 
-        def transcribe(self, path, *, language):
+        def transcribe(self, path, *, language, vad_filter):
+            assert vad_filter is True
             calls["language"] = language
             return (
                 iter([SimpleNamespace(start=0.0, end=1.0, text="bonjour")]),
@@ -219,6 +226,7 @@ def test_faster_whisper_explicit_language_passed_through(tmp_path, monkeypatch):
     monkeypatch.setitem(
         sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel)
     )
+    provide_faster_whisper_cache(monkeypatch, tmp_path)
     result = FasterWhisperBackend("small", tmp_path / "cache").transcribe(audio, "fr")
 
     assert calls["language"] == "fr"  # 显式语言原样传给 Whisper

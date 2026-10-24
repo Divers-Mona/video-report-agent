@@ -65,11 +65,41 @@ WSL 内也可在任意目录运行 `bash /mnt/d/Project/video-report-agent/scrip
 
 ## 本地语音识别
 
-默认使用 faster-whisper `small`，固定运行在 CPU/int8，不占用报告模型所用 GPU。模型 ID 可设为 faster-whisper 支持的模型名，也可指向本地 CTranslate2 模型目录；权重默认缓存在 `.tooling/wsl/cache/asr`。新模型首次生成时会下载并缓存权重，无需重装 faster-whisper 或整个环境。也可在修改 `.env` 的 `ASR_MODEL` 后，先运行 `wsl.exe -d Ubuntu-26.04 --exec /mnt/d/Project/video-report-agent/.venv-wsl/bin/python /mnt/d/Project/video-report-agent/scripts/cache_faster_whisper_model.py` 预下载。下载音频、生成转写和报告仍按上游的顺序执行；字幕文件是 `fused` 模式的融合输入，不会绕过 ASR。
+默认使用 faster-whisper `small`，固定运行在 CPU/int8，不占用报告模型所用 GPU。模型 ID 可设为 faster-whisper 支持的模型名，也可指向本地 CTranslate2 模型目录；权重默认缓存在 `.tooling/wsl/cache/asr`。`generate` 和 `transcribe` 仅使用本地权重（`local_files_only=True`），不会隐式下载模型。修改 `.env` 的 `ASR_MODEL` 后，显式运行 `wsl.exe -d Ubuntu-26.04 --exec /mnt/d/Project/video-report-agent/.venv-wsl/bin/python /mnt/d/Project/video-report-agent/scripts/cache_faster_whisper_model.py` 下载；首次安装也可运行 `scripts/setup-wsl.sh`。权重缺失时返回 `ASR_MODEL_MISSING`，已有完整音频可在重试时复用。下载音频、生成转写和报告仍顺序执行；字幕文件是 `fused` 模式的融合输入，不会绕过 ASR。
 
 中文和英文使用同一套 faster-whisper 多语言模型。语言选择优先级为：本次 `--asr-language` → 环境变量 / `.env` 的 `ASR_LANGUAGE` → 默认 `zh`。faster-whisper 和 MLX 适配器支持 `auto`（`--asr-language auto` 或 `.env` 的 `ASR_LANGUAGE=auto`），转写时自动检测语言；paraformer 仍只接受 `zh`。语言参数不控制报告输出语言。
 
-单次尝试更大的转写模型可追加 `--asr-model medium` 或 `--asr-model large-v3`，不会修改默认配置；`--model` 选择的是报告模型。更大的转写模型通常需要更多内存和 CPU 时间，不保证每句话都正确。本次英文实测仅使用 `small`。
+单次尝试更大的转写模型可追加 `--asr-model medium` 或 `--asr-model large-v3`，需先显式缓存相应权重，不会修改默认配置；`--model` 选择的是报告模型。更大的模型通常需要更多内存和 CPU 时间，不保证每句话都正确。本次英文实测仅使用 `small`。
+
+### 只转写单条视频
+
+```powershell
+.\video-report.cmd transcribe "https://www.youtube.com/watch?v=jNQXAC9IVRw" --asr-backend faster-whisper --asr-language auto
+```
+
+此命令不调用报告模型。`asr.json` 保留原始时间戳、模型、检测语言和识别结果；`canonical-transcript.jsonl` 保存规范时间单元；`transcript.md` 提供时间戳正文、模型、语言及文字稿状态；`status.json` 保存整体处理状态和失败原因。请求语言 `auto` 与实际检测语言分别保留在输入配置和 ASR 产物中。
+
+构造 faster-whisper 引擎前，先以仅本地方式解析模型目录，并按 doctor 相同的标准检查非空 `config.json`、`model.bin` 和 `tokenizer.json`。本地目录或缓存快照缺少任一文件时返回 `ASR_MODEL_MISSING`，不进入引擎或 tokenizer 的远程获取回退；本地自定义目录需补齐这些文件，或改用已显式缓存的完整模型。
+
+faster-whisper 默认启用 VAD（`ASR_VAD_FILTER=true`），过滤无语音片段，减少背景音乐或静音导致的幻觉。VAD 不能保证识别完全准确。该布尔值保存在 `input.json` 的 `asr_parameters.vad_filter` 中，参与 ASR／完整转写缓存身份；设置 `false` 会使用不同缓存。
+
+### 资源上限与失败重试
+
+两份配置示例均提供以下正整数选项，零和负数无效：
+
+| 配置 | 默认值 | 含义 |
+|---|---|---|
+| `MEDIA_MAX_DURATION_SECONDS` | `18000` | 单条视频最多 5 小时 |
+| `MEDIA_MAX_FILE_BYTES` | `1073741824` | 单个下载文件最多 1 GiB |
+| `MEDIA_MAX_DISK_BYTES` | `10737418240` | 所选运行根目录内常规文件逻辑字节总量最多 10 GiB |
+
+上限在建任务时保存到 `input.json.media_limits`。磁盘统计不跟随符号链接，硬链接按文件身份去重；默认的 `.tooling` 模型缓存位于运行根目录之外，不计入。下载前使用时长、可用空间和已知文件大小限制；下载中约每秒检查一次实际文件及运行目录用量，转换音频前预估 PCM 空间，转换后再次检查。它是应用层检查，下载缓冲或转换估算偏差可能暂时超过阈值，不是操作系统硬配额。小型状态／诊断记录仍会写入，已完成的转写可直接复用。
+
+终态失败仍为 `FAILED`，用 `error_category` 区分 `INPUT_REJECTED`、`DOWNLOAD_FAILED`、`MODEL_MISSING`、`TRANSCRIPTION_FAILED`；`error_code` 给出具体原因。下载错误只根据 yt-dlp 输出识别登录、付费／会员、地区限制和平台风控／人机验证。B站 `Unable to extract initial state` 记录为可能的风控／验证相关页面解析失败；无法识别的输出保留为一般下载失败，不额外请求页面探测。
+
+解决原因后重新运行命令即可重试，完整音频及兼容的 ASR／转写结果会复用。资源超限不会自动删除已有文件或改变七天媒体留存、转写文本保留策略；调整上限对新任务生效。
+
+超限停止后遗留的媒体 `.part` 和 `.part-FragN` 分片临时文件，同样按终态任务的七天策略过期。未到期任务、字幕（含字幕半成品）、诊断文本及其他运行根目录不受这项清理影响。
 
 ## 英文视频实测
 

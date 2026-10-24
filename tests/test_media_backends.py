@@ -47,7 +47,9 @@ def test_faster_whisper_defaults_to_cpu_int8_and_accepts_model_override(env):
     default = resolve_media_config("faster-whisper")
     assert default["asr_model"] == "small"
     assert default["asr_provider"] == "local"
-    assert default["asr_parameters"] == {"device": "cpu", "compute_type": "int8"}
+    assert default["asr_parameters"] == {
+        "device": "cpu", "compute_type": "int8", "vad_filter": True,
+    }
     assert default["asr_base_url"] is None
     env.setenv("ASR_MODEL", "D:/models/custom-whisper")
     assert resolve_media_config("faster-whisper")["asr_model"] == "D:/models/custom-whisper"

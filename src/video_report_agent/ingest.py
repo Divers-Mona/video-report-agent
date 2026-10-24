@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import queue
 import re
 import shutil
@@ -18,6 +17,17 @@ from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
+from .media_limits import (
+    DEFAULT_LIMITS,
+    MediaLimitError,
+    check_disk,
+    check_download,
+    check_duration,
+    duration_limit_text,
+    limits_for_run,
+    resolve_media_limits,
+)
+
 BILIBILI_HOSTS = frozenset({"bilibili.com", "www.bilibili.com"})
 YOUTUBE_HOSTS = frozenset(
     {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
@@ -26,10 +36,11 @@ _BVID_PATTERN = re.compile(r"BV[0-9A-Za-z]{10}")
 _YT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{11}")
 _PAGE_PATTERN = re.compile(r"[0-9]+")
 _SOURCE_NAME = "source"
-MAX_VIDEO_SECONDS = 5 * 60 * 60
+MAX_VIDEO_SECONDS = DEFAULT_LIMITS["MEDIA_MAX_DURATION_SECONDS"]
 DOWNLOAD_CHECK_SECONDS = 30
 DOWNLOAD_STALL_SECONDS = 10
 DOWNLOAD_BUDGET_SECONDS = 120
+RESOURCE_CHECK_SECONDS = 1
 _PROGRESS_PREFIX = "vreport-progress:"
 
 CommandRunner = Callable[..., Any]
@@ -292,13 +303,10 @@ def probe_bilibili_video(
             "VIDEO_METADATA_UNAVAILABLE", "无法查询视频时长，请稍后重试。",
         ) from exc
     duration = payload.get("duration")
-    if (
-        isinstance(duration, bool) or not isinstance(duration, (int, float))
-        or not math.isfinite(duration) or duration <= 0
-    ):
-        raise UrlIngestError("VIDEO_DURATION_INVALID", "无法确认视频时长，不能处理此视频。")
-    if duration > MAX_VIDEO_SECONDS:
-        raise UrlIngestError("VIDEO_TOO_LONG", "单个视频最长支持 5 小时。")
+    try:
+        check_duration(duration, resolve_media_limits())
+    except MediaLimitError as exc:
+        raise UrlIngestError(exc.code, str(exc)) from exc
     return {
         "bvid": source.bvid, "page_number": source.page_number,
         "video_id": source.video_id, "url": source.canonical_url,
@@ -325,7 +333,15 @@ def _download_needs_switch(progress: dict, now: float, last_change: float) -> bo
     ))
 
 
+def _check_download_limits(run_dir: Path, limits: dict, downloaded_bytes=0) -> None:
+    try:
+        check_download(run_dir, limits, downloaded_bytes=downloaded_bytes)
+    except MediaLimitError as exc:
+        raise UrlIngestError(exc.code, str(exc)) from exc
+
+
 def _run_download(command: list[str], run_dir: Path, runner: CommandRunner | None) -> Any:
+    limits = limits_for_run(run_dir)
     # The injected runner is retained for callers testing output validation.
     if runner is not None:
         try:
@@ -336,6 +352,7 @@ def _run_download(command: list[str], run_dir: Path, runner: CommandRunner | Non
                 "DOWNLOAD_ERROR", "视频下载失败，请稍后重试或联系管理员。"
             ) from exc
         (run_dir / "download.log").write_text(_safe_download_line(str(result.stderr)))
+        _check_download_limits(run_dir, limits)
         return result
 
     deadline = time.monotonic() + DOWNLOAD_BUDGET_SECONDS
@@ -353,6 +370,7 @@ def _run_download(command: list[str], run_dir: Path, runner: CommandRunner | Non
             last_bytes = 0
             started = last_change = time.monotonic()
             next_check = started + DOWNLOAD_CHECK_SECONDS
+            next_resource_check = started
             reason = None
             try:
                 process = subprocess.Popen(worker, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -378,6 +396,12 @@ def _run_download(command: list[str], run_dir: Path, runner: CommandRunner | Non
                     if now >= deadline:
                         reason = "total-budget-exhausted"
                         break
+                    if now >= next_resource_check:
+                        size = progress.get("downloaded_bytes")
+                        _check_download_limits(
+                            run_dir, limits, size if isinstance(size, (int, float)) else 0
+                        )
+                        next_resource_check = now + RESOURCE_CHECK_SECONDS
                     if now >= next_check:
                         switch = _download_needs_switch(progress, now, last_change)
                         action = "switch" if switch and attempt == 0 else "continue"
@@ -431,6 +455,7 @@ def _run_download(command: list[str], run_dir: Path, runner: CommandRunner | Non
             if reason == "total-budget-exhausted":
                 break
             if reason is None and completed.returncode in (0, 101):
+                _check_download_limits(run_dir, limits)
                 return completed
             if attempt == 0:
                 log.write("[download] retry=1 use-platform-backup-or-reparse\n")
@@ -475,13 +500,10 @@ def _metadata(info_path: Path, source: VideoSource) -> tuple[str, str, str]:
     if payload.get("is_live") or payload.get("live_status") in {"is_live", "is_upcoming"}:
         raise UrlIngestError("URL_INVALID", "暂不支持正在直播或即将直播的视频。")
     duration = payload.get("duration")
-    if (
-        isinstance(duration, bool) or not isinstance(duration, (int, float))
-        or not math.isfinite(duration) or duration <= 0
-    ):
-        raise UrlIngestError("VIDEO_DURATION_INVALID", "无法确认视频时长，不能处理此视频。")
-    if duration > MAX_VIDEO_SECONDS:
-        raise UrlIngestError("VIDEO_TOO_LONG", "单个视频最长支持 5 小时。")
+    try:
+        check_duration(duration, limits_for_run(info_path.parent.parent))
+    except MediaLimitError as exc:
+        raise UrlIngestError(exc.code, str(exc)) from exc
     title = payload.get("title")
     uploader = payload.get("uploader") or payload.get("channel")
     if not isinstance(title, str) or not title.strip():
@@ -492,6 +514,44 @@ def _metadata(info_path: Path, source: VideoSource) -> tuple[str, str, str]:
     uploader = uploader.strip()
     attribution = f"{source.platform_label}；{uploader}；《{title}》；{source.canonical_url}"
     return title, uploader, attribution
+
+
+def _download_failure(source: VideoSource, error: str) -> UrlIngestError:
+    text = error.lower()
+    platform = source.platform_label
+    if "http error 412" in text:
+        return UrlIngestError(
+            "DOWNLOAD_PLATFORM_BLOCKED",
+            f"视频链接已识别，但 {platform} 拒绝了下载请求（HTTP 412）。"
+            "可能需要完成平台风控或人机验证，请稍后重试。",
+        )
+    if any(token in text for token in (
+        "not a bot", "captcha", "geetest", "riskhit", "risk-captcha-sdk", "人机验证", "风控",
+    )):
+        return UrlIngestError("DOWNLOAD_PLATFORM_BLOCKED", f"{platform} 要求风控或人机验证。")
+    if source.platform == "bilibili" and "unable to extract initial state" in text:
+        return UrlIngestError(
+            "DOWNLOAD_PLATFORM_BLOCKED",
+            "Bilibili 页面解析失败（Unable to extract initial state），"
+            "可能遇到平台风控或人机验证。",
+        )
+    if any(token in text for token in (
+        "members-only", "members only", "requires payment", "paid video", "premium member",
+        "大会员", "付费", "充电专属",
+    )):
+        return UrlIngestError(
+            "DOWNLOAD_MEMBERSHIP_REQUIRED", f"{platform} 视频需要付费或会员权限。"
+        )
+    if any(token in text for token in (
+        "not available in your country", "not made this video available in your country",
+        "geo-restricted", "geographic restriction", "地区限制",
+    )):
+        return UrlIngestError("DOWNLOAD_GEO_RESTRICTED", f"{platform} 视频受地区限制。")
+    if any(token in text for token in (
+        "sign in", "login required", "log in", "requires authentication", "需要登录",
+    )):
+        return UrlIngestError("DOWNLOAD_LOGIN_REQUIRED", f"{platform} 视频需要登录后访问。")
+    return UrlIngestError("DOWNLOAD_ERROR", f"{platform} 视频下载失败，请稍后重试。")
 
 
 def download_bilibili_video(
@@ -505,10 +565,20 @@ def download_bilibili_video(
     """Run the yt-dlp command and verify its run-local output."""
 
     download_dir = run_dir.resolve() / "download"
+    if download_dir.is_symlink():
+        raise UrlIngestError("URL_INVALID", "下载目录不能是符号链接。")
+    _inside(download_dir, run_dir, category="URL_INVALID", message="下载目录超出任务范围。")
     try:
         download_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise UrlIngestError("DOWNLOAD_ERROR", "download directory is unavailable") from exc
+    if any(path.is_symlink() for path in download_dir.iterdir()):
+        raise UrlIngestError("URL_INVALID", "下载目录中不能包含符号链接。")
+    limits = limits_for_run(run_dir)
+    try:
+        remaining = check_disk(run_dir, limits)
+    except MediaLimitError as exc:
+        raise UrlIngestError(exc.code, str(exc)) from exc
     executable = shutil.which("yt-dlp")
     if executable is None:
         raise UrlIngestError("DOWNLOAD_ERROR", "yt-dlp is unavailable")
@@ -517,8 +587,9 @@ def download_bilibili_video(
         "--ignore-config",
         "--no-playlist",
         "--match-filter",
-        f"duration <= {MAX_VIDEO_SECONDS} & !is_live & live_status !=? is_live "
+        f"duration <= {limits['MEDIA_MAX_DURATION_SECONDS']} & !is_live & live_status !=? is_live "
         "& live_status !=? is_upcoming",
+        "--max-filesize", str(min(limits["MEDIA_MAX_FILE_BYTES"], remaining)),
         "--break-on-reject",
         "-P",
         str(download_dir),
@@ -545,24 +616,25 @@ def download_bilibili_video(
         command.extend(["--write-subs", "--sub-langs", "all", "--sub-format", "srt/vtt/ass/best"])
     command.append(source.canonical_url)
     completed = _run_download(command, run_dir, runner)
+    error = str(getattr(completed, "stderr", ""))
+    if "larger than max-filesize" in error.lower():
+        disk_limited = remaining < limits["MEDIA_MAX_FILE_BYTES"]
+        raise UrlIngestError(
+            "MEDIA_DISK_LIMIT" if disk_limited else "MEDIA_FILE_TOO_LARGE",
+            "视频下载将超过运行目录磁盘上限。" if disk_limited
+            else f"下载文件超过配置上限 {limits['MEDIA_MAX_FILE_BYTES']} 字节。",
+        )
     if getattr(completed, "returncode", None) == 101 or (
         not str(getattr(completed, "stdout", "")).strip()
         and "does not pass filter" in str(getattr(completed, "stderr", ""))
     ):
         raise UrlIngestError(
             "VIDEO_DURATION_INVALID",
-            "当前仅支持不超过 5 小时的非直播视频，不支持正在直播或即将直播的视频。",
+            f"当前仅支持不超过 {duration_limit_text(limits)}的非直播视频，"
+            "不支持正在直播或即将直播的视频。",
         )
     if getattr(completed, "returncode", 1) != 0:
-        if "HTTP Error 412" in str(getattr(completed, "stderr", "")):
-            raise UrlIngestError(
-                "DOWNLOAD_ERROR",
-                f"视频链接已识别，但 {source.platform_label} 拒绝了下载请求（HTTP 412）。"
-                "请稍后重试；如果反复失败，请联系管理员。",
-            )
-        raise UrlIngestError(
-            "DOWNLOAD_ERROR", "视频下载失败，请稍后重试；如果反复失败，请联系管理员。"
-        )
+        raise _download_failure(source, error)
     media_path = _inside(
         _printed_media_path(getattr(completed, "stdout", None), download_dir),
         download_dir,
