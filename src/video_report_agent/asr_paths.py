@@ -55,3 +55,31 @@ def model_directory_is_complete(path: Path) -> bool:
                    for name in required_files)
     except OSError:
         return False
+
+
+def faster_whisper_model_repo_id(model: str) -> str:
+    """Use the installed backend's aliases for offline cache lookup."""
+    if "/" in model:
+        return model
+    from faster_whisper.utils import _MODELS
+
+    return _MODELS.get(model, model)
+
+
+def resolve_cached_faster_whisper_model(
+    model: str, cache_root: Path, *, project_root: Path | None = None
+) -> Path:
+    """Resolve and validate all required files before constructing any engine."""
+    directory = local_faster_whisper_model_path(model, project_root=project_root)
+    if directory is None:
+        from faster_whisper.utils import download_model
+
+        directory = Path(download_model(
+            faster_whisper_model_repo_id(model), local_files_only=True,
+            cache_dir=str(resolve_faster_whisper_cache_root(cache_root, project_root=project_root)),
+        ))
+    if not model_directory_is_complete(directory):
+        raise FileNotFoundError(
+            "Local model requires non-empty config.json, model.bin and tokenizer.json"
+        )
+    return directory.resolve()

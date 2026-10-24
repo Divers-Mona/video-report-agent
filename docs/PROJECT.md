@@ -7,7 +7,7 @@
 ## 当前能力
 
 - 两条使用路径：独立复制 Skill 与模板，用自己的 Coding Agent 阅读完整转写；或通过 `video-report generate` 执行下载到报告的完整流水线。
-- 流水线支持公开 Bilibili 视频及受限短链解析，以及 YouTube 单视频链接，最长 5 小时；CLI/Web 默认 `auto`，Bilibili 按作者字幕轨 → ai-zh → ASR 短路采用单路，YouTube 直接使用 ASR，Web OCR 关闭。主动选源可做多路对照／融合；Core 保留旧显式 ASR-only/fused 调用。
+- 流水线支持公开 Bilibili 视频及受限短链解析，以及 YouTube 单视频链接，默认最长 5 小时（可配置）；CLI/Web 默认 `auto`，Bilibili 按作者字幕轨 → ai-zh → ASR 短路采用单路，YouTube 直接使用 ASR，Web OCR 关闭。主动选源可做多路对照／融合；Core 保留旧显式 ASR-only/fused 调用。
 - 内置 ASR 为 Apple Silicon MLX Whisper、可选 CPU/int8 faster-whisper 与百炼文件转写适配（支持代码列出的 Paraformer/Fun-ASR 模型）。满足时长与静音条件的云端长音频分两段并行识别，恢复原时间轴。
 - CLI 支持 OpenAI 兼容本地模型服务：`models` 仅发现模型列表，生成时会在未显式选择的情况下按 `/models` 单模型自动选择，多模型要求明确指定；其他 Pi provider 路径保持可用。
 - Windows 可通过 `video-report.cmd` 调用 WSL2 Ubuntu CLI；具体隔离安装、配置和验证范围见 [本地部署说明](local-wsl.md)。这不代表 Windows 原生执行已验证。

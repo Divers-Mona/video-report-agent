@@ -12,7 +12,11 @@ from typing import Any, Protocol
 
 from video_report_agent.schemas import AsrSegment
 
-from .asr_paths import resolve_faster_whisper_cache_root, resolve_faster_whisper_model
+from .asr_paths import (
+    resolve_cached_faster_whisper_model,
+    resolve_faster_whisper_cache_root,
+    resolve_faster_whisper_model,
+)
 from .redaction import redact
 
 DEFAULT_ASR_MODEL = "mlx-community/whisper-large-v3-turbo"
@@ -21,6 +25,10 @@ DEFAULT_FASTER_WHISPER_MODEL = "small"
 
 class AsrError(RuntimeError):
     """Raised when an ASR backend cannot produce usable timestamped segments."""
+
+
+class AsrModelMissingError(AsrError):
+    """The requested faster-whisper model is unavailable in the local cache."""
 
 
 @dataclass(frozen=True)
@@ -230,7 +238,7 @@ class FasterWhisperBackend:
         self.resolved_model = resolve_faster_whisper_model(model)
         self.download_root = resolve_faster_whisper_cache_root(download_root)
 
-    def transcribe(self, audio_path: Path, language: str = "zh") -> AsrRun:
+    def transcribe(self, audio_path: Path, language: str = "zh", *, vad_filter=True) -> AsrRun:
         if not audio_path.is_file() or audio_path.stat().st_size == 0:
             raise AsrError(f"audio input is missing or empty: {audio_path}")
         try:
@@ -240,14 +248,26 @@ class FasterWhisperBackend:
 
         started_at = perf_counter()
         try:
+            directory = resolve_cached_faster_whisper_model(self.resolved_model, self.download_root)
             engine = WhisperModel(
-                self.resolved_model,
+                str(directory),
                 device="cpu",
                 compute_type="int8",
                 download_root=str(self.download_root),
+                local_files_only=True,
             )
+        except FileNotFoundError as exc:
+            raise AsrModelMissingError(
+                f"本地转写模型缺失或不完整：{self.model}。"
+                "请运行 scripts/cache_faster_whisper_model.py "
+                "或 scripts/setup-wsl.sh 显式准备完整模型后重试。"
+            ) from exc
+        except Exception as exc:
+            raise AsrError(f"faster-whisper model loading failed: {type(exc).__name__}") from exc
+        try:
             segments, info = engine.transcribe(
-                str(audio_path), language=None if language == "auto" else language
+                str(audio_path), language=None if language == "auto" else language,
+                vad_filter=vad_filter,
             )
             raw_segments = [
                 {"start": segment.start, "end": segment.end, "text": segment.text, "words": []}
@@ -296,7 +316,9 @@ def transcribe_audio(
     if backend == "mlx":
         return MlxWhisperBackend(model).transcribe(audio_path, language)
     if backend == "faster-whisper":
-        return FasterWhisperBackend(model).transcribe(audio_path, language)
+        return FasterWhisperBackend(model).transcribe(
+            audio_path, language, vad_filter=(parameters or {}).get("vad_filter", True)
+        )
     if backend == "paraformer":
         from .paraformer import ParaformerBackend
 

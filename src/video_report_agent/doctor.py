@@ -12,8 +12,7 @@ from pathlib import Path
 
 from .asr import DEFAULT_FASTER_WHISPER_MODEL
 from .asr_paths import (
-    local_faster_whisper_model_path,
-    model_directory_is_complete,
+    resolve_cached_faster_whisper_model,
     resolve_faster_whisper_cache_root,
 )
 from .local_models import LocalModelError, discover_models
@@ -54,29 +53,11 @@ def _playwright_check() -> tuple[bool, str]:
 
 
 def _asr_model_ready(model: str, cache_root: Path) -> bool:
-    local_path = local_faster_whisper_model_path(model, project_root=PROJECT_ROOT)
-    if local_path is not None:
-        return local_path.is_dir() and model_directory_is_complete(local_path)
     try:
-        from faster_whisper.utils import download_model
-
-        resolved = download_model(
-            _asr_model_repo_id(model),
-            local_files_only=True,
-            cache_dir=str(resolve_faster_whisper_cache_root(cache_root, project_root=PROJECT_ROOT)),
-        )
+        resolve_cached_faster_whisper_model(model, cache_root, project_root=PROJECT_ROOT)
     except Exception:
         return False
-    return model_directory_is_complete(Path(resolved))
-
-
-def _asr_model_repo_id(model: str) -> str:
-    """Resolve aliases with the same table used by the installed backend."""
-    if "/" in model:
-        return model
-    from faster_whisper.utils import _MODELS
-
-    return _MODELS.get(model, model)
+    return True
 
 
 def _model_check() -> tuple[bool | None, str]:

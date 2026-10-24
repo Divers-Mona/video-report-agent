@@ -35,6 +35,13 @@ def cloud_asr_parameters(model):
     )
 
 
+def _vad_filter() -> bool:
+    value = os.getenv("ASR_VAD_FILTER", "true").strip().lower()
+    if value not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+        raise ValueError("ASR_VAD_FILTER must be true or false")
+    return value in {"true", "1", "yes", "on"}
+
+
 def resolve_media_config(
     asr_backend=None,
     asr_model=None,
@@ -84,7 +91,7 @@ def resolve_media_config(
         "asr_model": model,
         "asr_language": asr_language or os.getenv("ASR_LANGUAGE") or "zh",
         "asr_parameters": (
-            {"device": "cpu", "compute_type": "int8"}
+            {"device": "cpu", "compute_type": "int8", "vad_filter": _vad_filter()}
             if backend == "faster-whisper"
             else cloud_asr_parameters(model) if backend == "paraformer" else {}
         ),
