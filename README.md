@@ -214,7 +214,7 @@ Bilibili 的 CLI 默认自动按“作者字幕轨 → B站 ai-zh → ASR”取�
 - **配置**：从项目根目录读取 `.env`，进程环境变量优先。Pi 配置保存在工作目录的 `config/pi/`，缺失的模型默认配置会初始化，已有配置保留。其他目录通过启动前的 `PI_CODING_AGENT_DIR` 指定。不要提交凭证。
 - **隔离**：示例使用 `PI_TASK_ISOLATION=local`，Pi 工具拥有本机用户权限。Docker 模式需要应用镜像、Docker daemon 与同一 scope 的健康 task cleaner；选用后失败不会退回本地执行。详见 [Core 架构](docs/ARCHITECTURE.md)。
 - **追踪**：`run.trace.jsonl` 记录流水线阶段，`pi.events.jsonl` 记录 Agent 模型与工具事件。完成需等待 `agent_settled`、最终 assistant `stopReason == "stop"`，并通过 HTML 交付检查。
-- **边界**：内置视频入口支持公开 Bilibili 和 YouTube 单视频，不提供登录、私有视频访问或播放列表批处理。YouTube 接受 watch、youtu.be 和 shorts 链接。视频上限 5 小时，执行期限 30 分钟；本地停止后已提交的云 ASR 仍可能继续计费。默认只理解转写，画面中的非语音信息可能缺失。Windows 使用 [WSL2 CLI 入口](docs/local-wsl.md)；原生 Windows 运行未作为已验证方案。
+- **边界**：内置视频入口支持公开 Bilibili 和 YouTube 单视频，不提供登录、私有视频访问或播放列表批处理。YouTube 接受 watch、youtu.be 和 shorts 链接；单视频链接中的 `list` 参数会移除，纯播放列表链接被拒绝。下载前按元数据拦截正在直播或即将直播的视频。视频上限 5 小时，执行期限 30 分钟；本地停止后已提交的云 ASR 仍可能继续计费。默认只理解转写，画面中的非语音信息可能缺失。Windows 使用 [WSL2 CLI 入口](docs/local-wsl.md)；原生 Windows 运行未作为已验证方案。
 
 ## 开发与进一步阅读
 

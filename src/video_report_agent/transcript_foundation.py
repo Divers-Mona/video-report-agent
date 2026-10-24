@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from video_report_agent.audio import probe_media_duration_ms
 
 TRANSCRIPT_SCHEMA_VERSION = "visual-report-transcript-foundation.v1"
-NORMALIZER_VERSION = "nfkc-whitespace-punctuation-opencc-t2s.v1"
+NORMALIZER_VERSION = "nfkc-whitespace-punctuation-opencc-t2s-zh.v2"
 FUSION_VERSION = "local-span-fusion.v1"
 OCR_VERSION = "rapidocr-ppocrv6-small-onnxruntime.v1"
 OCR_ENGINE = "onnxruntime"
@@ -119,7 +119,7 @@ class SourceTextEvent(BaseModel):
     def validate_boundaries_and_normalization(self) -> "SourceTextEvent":
         if self.end_ms <= self.start_ms:
             raise ValueError("source event end_ms must be greater than start_ms")
-        if self.normalized_text != normalize_text(self.text):
+        if self.normalized_text != normalize_text(self.text, self.provenance.get("language")):
             raise ValueError("source event normalized_text is not deterministic")
         return self
 
@@ -259,10 +259,21 @@ def _presentation_text(value: str) -> str:
     return text
 
 
-def normalize_text(value: str) -> str:
+def _language_code(language: str | None) -> str:
+    code = (language or "zh").lower().replace("_", "-").removeprefix("ai-").split("-")[0]
+    aliases = {
+        "chi": "zh", "zho": "zh", "eng": "en", "jpn": "ja",
+        "kor": "ko", "fra": "fr", "fre": "fr",
+        "chs": "zh", "cht": "zh", "中文": "zh", "简中": "zh", "繁中": "zh",
+    }
+    return aliases.get(code, code)
+
+
+def normalize_text(value: str, language: str | None = "zh") -> str:
     """Return closed comparison text; no lexical content is generated."""
 
-    return _opencc_simplify(_presentation_text(value))
+    text = _presentation_text(value)
+    return _opencc_simplify(text) if _language_code(language) == "zh" else text
 
 
 def parse_roi(value: object) -> tuple[float, float, float, float]:
@@ -933,11 +944,12 @@ def _subtitle_format(path: Path) -> str:
     return suffix.lstrip(".")
 
 
-def parse_subtitle_file(path: Path) -> list[SourceTextEvent]:
+def parse_subtitle_file(path: Path, *, language: str | None = "zh") -> list[SourceTextEvent]:
     """Parse SRT/VTT/ASS cues through one local pysubs2 adapter."""
 
     if not path.is_file() or path.stat().st_size == 0:
         raise SubtitleParseError(f"subtitle file is missing or empty: {path}")
+    language = subtitle_file_language(path) or language
     subtitle_format = _subtitle_format(path)
     try:
         import pysubs2
@@ -966,13 +978,14 @@ def parse_subtitle_file(path: Path) -> list[SourceTextEvent]:
                 start_ms=start_ms,
                 end_ms=end_ms,
                 text=text,
-                normalized_text=normalize_text(text),
+                normalized_text=normalize_text(text, language),
                 confidence=None,
                 stability=Stability(sample_count=1, distinct_frame_count=1),
                 provenance={
                     "path": str(path.resolve()),
                     "format": subtitle_format,
                     "cue_index": index,
+                    "language": language,
                 },
             )
         )
@@ -981,21 +994,43 @@ def parse_subtitle_file(path: Path) -> list[SourceTextEvent]:
     return events
 
 
-def _subtitle_name_score(path: Path) -> tuple[int, str]:
+def _matches_language(value: str, language: str | None) -> bool:
+    requested = _language_code(language)
+    return any(
+        _language_code(token) == requested
+        for token in re.split(r"[.\s_-]+", value) if token
+    )
+
+
+def subtitle_file_language(path: Path) -> str | None:
+    """Read a subtitle filename's language tag before it is renamed for storage."""
+    for token in reversed(path.stem.lower().split(".")):
+        code = _language_code(token)
+        if token and (
+            re.fullmatch(r"[a-z]{2}(?:[_-][a-z0-9]+)*", token)
+            or code in {"zh", "en", "ja", "ko", "fr"}
+        ):
+            return code
+    return None
+
+
+def _subtitle_name_score(path: Path, language: str | None = "zh") -> tuple[int, str]:
     name = path.name.lower()
     chinese = any(token in name for token in ("zh", "chi", "zho", "chs", "中文", "简中", "繁中"))
     english = any(token in name for token in ("en", "eng", "英文"))
-    return (2 if chinese else (0 if not english else -1), name)
+    preferred = _matches_language(name, language) or (_language_code(language) == "zh" and chinese)
+    score = 4 if preferred else 2 if chinese else 0 if not english else -1
+    return score, name
 
 
-def select_subtitle_file(paths: Iterable[Path]) -> Path | None:
+def select_subtitle_file(paths: Iterable[Path], *, language: str | None = "zh") -> Path | None:
     candidates = sorted(
         (
             path
             for path in paths
             if path.is_file() and path.suffix.lower() in SUPPORTED_SUBTITLE_SUFFIXES
         ),
-        key=lambda path: (-_subtitle_name_score(path)[0], _subtitle_name_score(path)[1]),
+        key=lambda path: (-_subtitle_name_score(path, language)[0], path.name.lower()),
     )
     return candidates[0] if candidates else None
 
@@ -1037,7 +1072,7 @@ def _probe_subtitle_streams(
     )
 
 
-def _stream_language_score(stream: dict[str, Any]) -> tuple[int, str]:
+def _stream_language_score(stream: dict[str, Any], preferred: str | None = "zh") -> tuple[int, str]:
     tags = stream.get("tags")
     tags = tags if isinstance(tags, dict) else {}
     language = str(tags.get("language", "")).lower()
@@ -1045,7 +1080,11 @@ def _stream_language_score(stream: dict[str, Any]) -> tuple[int, str]:
     chinese = any(
         token in f"{language} {title}" for token in ("zh", "chi", "zho", "中文", "简", "繁")
     )
-    return (2 if chinese else 0, f"{language}:{title}")
+    matched = _matches_language(f"{language} {title}", preferred) or (
+        _language_code(preferred) == "zh" and chinese
+    )
+    score = 4 if matched else 2 if chinese else 0
+    return score, f"{language}:{title}"
 
 
 def discover_subtitle_source(
@@ -1054,6 +1093,7 @@ def discover_subtitle_source(
     explicit_path: Path | None = None,
     artifact_root: Path | None = None,
     runner: Callable[..., Any] | None = None,
+    language: str | None = "zh",
 ) -> SubtitleDiscovery:
     """Choose an explicit/sidecar/embedded text subtitle deterministically."""
 
@@ -1068,13 +1108,16 @@ def discover_subtitle_source(
             status="AVAILABLE",
             path=explicit_path.resolve(),
             format=explicit_path.suffix.lower().lstrip("."),
+            language=subtitle_file_language(explicit_path),
         )
 
     try:
         sidecar = select_subtitle_file(
-            candidate
-            for candidate in media_path.parent.iterdir()
-            if candidate.name.startswith(f"{media_path.stem}.")
+            (
+                candidate for candidate in media_path.parent.iterdir()
+                if candidate.name.startswith(f"{media_path.stem}.")
+            ),
+            language=language,
         )
     except OSError:
         return SubtitleDiscovery(status="FAILED", warning="SUBTITLE_DISCOVERY_FAILED")
@@ -1083,6 +1126,7 @@ def discover_subtitle_source(
             status="AVAILABLE",
             path=sidecar.resolve(),
             format=sidecar.suffix.lower().lstrip("."),
+            language=subtitle_file_language(sidecar),
         )
 
     try:
@@ -1094,9 +1138,9 @@ def discover_subtitle_source(
     ordered = sorted(
         enumerate(streams),
         key=lambda item: (
-            -_stream_language_score(item[1])[0],
+            -_stream_language_score(item[1], language)[0],
             item[0],
-            _stream_language_score(item[1])[1],
+            _stream_language_score(item[1], language)[1],
         ),
     )
     stream_position, selected = ordered[0]
@@ -1184,7 +1228,7 @@ def load_event_jsonl(
 
 
 def asr_events_from_payload(
-    payload: dict[str, Any], *, payload_path: Path | None = None
+    payload: dict[str, Any], *, payload_path: Path | None = None, language: str | None = "zh"
 ) -> list[SourceTextEvent]:
     rows = payload.get("segments")
     if not isinstance(rows, list) or not rows:
@@ -1203,7 +1247,8 @@ def asr_events_from_payload(
             text = text_value
         except (KeyError, TypeError, ValueError) as exc:
             raise TranscriptFoundationError(f"ASR segment {index} is invalid") from exc
-        provenance: dict[str, Any] = {"asr_ordinal": ordinal}
+        event_language = payload.get("language") or language
+        provenance: dict[str, Any] = {"asr_ordinal": ordinal, "language": event_language}
         provenance.update({key: payload.get(key) for key in ("backend", "provider", "model")})
         words = row.get("words")
         if words:
@@ -1217,7 +1262,7 @@ def asr_events_from_payload(
                 start_ms=start_ms,
                 end_ms=end_ms,
                 text=text,
-                normalized_text=normalize_text(text),
+                normalized_text=normalize_text(text, event_language),
                 provenance=provenance,
             )
         )
@@ -1247,7 +1292,7 @@ def _alignment_score(
     return (
         1 if overlap_ms else 0,
         -gap_ms,
-        _similarity(normalize_text(asr_event.text), normalize_text(optional_event.text)),
+        _similarity(asr_event.normalized_text, optional_event.normalized_text),
         -center_distance,
         -asr_event.start_ms,
         asr_event.event_id,
@@ -1434,7 +1479,7 @@ def _ocr_frame_consensus_matches_span(
         target_span["operation"],
         target_span["asr_start"],
         target_span["asr_end"],
-        normalize_text(target_span["candidate_span"]),
+        normalize_text(target_span["candidate_span"], event.provenance.get("language")),
     )
     target_start = target_span["asr_start"]
     target_end = target_span["asr_end"]
@@ -1450,7 +1495,7 @@ def _ocr_frame_consensus_matches_span(
                     span["operation"],
                     span["asr_start"],
                     span["asr_end"],
-                    normalize_text(span["candidate_span"]),
+                    normalize_text(span["candidate_span"], event.provenance.get("language")),
                 )
                 for span in spans
             )
@@ -1464,7 +1509,7 @@ def _ocr_frame_consensus_matches_span(
                 span["operation"],
                 span["asr_start"],
                 span["asr_end"],
-                normalize_text(span["candidate_span"]),
+                normalize_text(span["candidate_span"], event.provenance.get("language")),
             )
             if span_key == target_key:
                 continue
@@ -1494,9 +1539,11 @@ def _is_cjk_span(value: str) -> bool:
     return bool(value) and all(any(start <= char <= end for start, end in ranges) for char in value)
 
 
-def _requires_repeated_cjk_support(asr_span: str, candidate_span: str) -> bool:
-    asr_value = normalize_text(asr_span)
-    candidate_value = normalize_text(candidate_span)
+def _requires_repeated_cjk_support(
+    asr_span: str, candidate_span: str, language: str | None = "zh"
+) -> bool:
+    asr_value = normalize_text(asr_span, language)
+    candidate_value = normalize_text(candidate_span, language)
     return (
         len(asr_value) > 1
         and len(candidate_value) > 1
@@ -1512,6 +1559,7 @@ def _span_is_eligible(
     asr_text: str | None = None,
     repeated_candidate_support: Mapping[str, int] | None = None,
 ) -> bool:
+    language = event.provenance.get("language")
     if (
         not span["eligible_context"]
         or span["unchanged_context"] < LOCAL_CONTEXT_MIN_CHARACTERS
@@ -1526,7 +1574,7 @@ def _span_is_eligible(
         or not candidate_span
         or (event.source == "ocr" and any(char.isspace() for char in asr_span + candidate_span))
         or any(
-            not 1 <= len(normalize_text(value)) <= LOCAL_SPAN_MAX_CHARACTERS
+            not 1 <= len(normalize_text(value, language)) <= LOCAL_SPAN_MAX_CHARACTERS
             for value in (asr_span, candidate_span)
         )
     ):
@@ -1543,8 +1591,8 @@ def _span_is_eligible(
         event.source == "ocr"
         and isinstance(event.provenance.get("frame_candidates"), list)
         and repeated_candidate_support is not None
-        and _requires_repeated_cjk_support(asr_span, candidate_span)
-        and repeated_candidate_support.get(normalize_text(candidate_span), 0) < 2
+        and _requires_repeated_cjk_support(asr_span, candidate_span, language)
+        and repeated_candidate_support.get(normalize_text(candidate_span, language), 0) < 2
     ):
         return False
     return True
@@ -1597,11 +1645,13 @@ def _repeated_ocr_candidate_support(
                 if (
                     span["operation"] != "replace"
                     or not span["eligible_context"]
-                    or not _requires_repeated_cjk_support(span["asr_span"], span["candidate_span"])
+                    or not _requires_repeated_cjk_support(
+                        span["asr_span"], span["candidate_span"], event.provenance.get("language")
+                    )
                     or not _ocr_frame_consensus_matches_span(asr_event.text, event, span)
                 ):
                     continue
-                candidate = normalize_text(span["candidate_span"])
+                candidate = normalize_text(span["candidate_span"], event.provenance.get("language"))
                 support.setdefault(candidate, set()).add(event.event_id)
     return {candidate: len(event_ids) for candidate, event_ids in support.items()}
 
@@ -1639,7 +1689,8 @@ def _build_unit(
     canonical_text = asr_text
     selected_source_ids: list[str] = []
 
-    asr_norm = normalize_text(asr_event.text)
+    language = asr_event.provenance.get("language")
+    asr_norm = asr_event.normalized_text
     subtitle_values = {event.normalized_text for event in subtitle_events}
     stable_ocr_events = [event for event in ocr_events if _ocr_is_stable(event)]
     stable_ocr_values = {event.normalized_text for event in stable_ocr_events}
@@ -1797,7 +1848,7 @@ def _build_unit(
         unit_id=f"unit-{index:06d}",
         start_ms=asr_event.start_ms,
         end_ms=asr_event.end_ms,
-        canonical_text=normalize_text(canonical_text),
+        canonical_text=normalize_text(canonical_text, language),
         asr_text=_presentation_text(actual_asr.text) if actual_asr is not None else None,
         ocr_text=_presentation_text(ocr.text) if ocr is not None else None,
         subtitle_text=_presentation_text(subtitle.text) if subtitle is not None else None,
@@ -1996,7 +2047,10 @@ def _accepted_multi_character_replacements(
             candidate_span = span.get("candidate_span")
             if not isinstance(asr_span, str) or not isinstance(candidate_span, str):
                 continue
-            if max(len(normalize_text(asr_span)), len(normalize_text(candidate_span))) <= 1:
+            if max(
+                len(normalize_text(value, event.provenance.get("language")))
+                for value in (asr_span, candidate_span)
+            ) <= 1:
                 continue
             candidate_ids = _consensus_candidate_ids(event)
             support = event.provenance.get("consensus_support")
@@ -2130,6 +2184,7 @@ __all__ = [
     "roi_pixel_bounds",
     "sample_video_frames",
     "select_subtitle_file",
+    "subtitle_file_language",
     "write_transcript_artifacts",
 ]
 

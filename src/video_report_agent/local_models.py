@@ -158,7 +158,7 @@ def local_provider_config(model_id: str, *, base_url: str | None = None) -> dict
 def configure_local_provider(
     models_path: Path, model_id: str, *, base_url: str | None = None
 ) -> None:
-    """Merge the selected local model into Pi's model file without touching other providers."""
+    """Merge the chosen local model while retaining other models and providers."""
     if not model_id.strip():
         raise LocalModelError("A local model ID is required")
     if models_path.is_file():
@@ -173,7 +173,21 @@ def configure_local_provider(
     providers = payload.setdefault("providers", {})
     if not isinstance(providers, dict):
         raise LocalModelError("Pi's models.json providers field must contain an object")
-    providers["local"] = local_provider_config(model_id, base_url=base_url)
+    existing = providers.get("local", {})
+    if not isinstance(existing, dict):
+        raise LocalModelError("Pi's local provider must contain an object")
+    models = existing.get("models", [])
+    if not isinstance(models, list) or any(not isinstance(model, dict) for model in models):
+        raise LocalModelError("Pi's local provider models must contain a list of objects")
+    updated = local_provider_config(model_id, base_url=base_url)
+    selected = updated["models"][0]
+    merged = [
+        {**model, **selected} if model.get("id") == model_id else model
+        for model in models
+    ]
+    if not any(model.get("id") == model_id for model in models):
+        merged.append(selected)
+    providers["local"] = {**existing, **updated, "models": merged}
     models_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = models_path.with_suffix(models_path.suffix + ".tmp")
     temporary.write_text(

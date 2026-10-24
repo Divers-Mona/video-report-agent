@@ -41,7 +41,8 @@ def build_transcript(
     if ocr_mode not in {"off", "roi", "auto"}:
         raise TranscriptFoundationError("ocr_mode must be off, roi, or auto")
     asr_payload = read_json_object(asr_path)
-    asr_events = asr_events_from_payload(asr_payload, payload_path=asr_path)
+    language = asr_payload.get("language") or manifest.get("asr_language") or "zh"
+    asr_events = asr_events_from_payload(asr_payload, payload_path=asr_path, language=language)
     warnings: list[str] = []
     source_status: dict[str, dict[str, Any]] = {
         "asr": {"status": "READY", "count": len(asr_events), "path": asr_path.name},
@@ -57,6 +58,7 @@ def build_transcript(
                 source_path,
                 explicit_path=explicit_path,
                 artifact_root=artifact_root,
+                language=language,
             )
         except OSError:
             discovery = None
@@ -77,7 +79,10 @@ def build_transcript(
                 "language": discovery.language,
             }
             try:
-                subtitle_events = parse_subtitle_file(discovery.path)
+                subtitle_events = parse_subtitle_file(
+                    discovery.path,
+                    language=manifest.get("subtitle_language") or discovery.language or language,
+                )
                 source_status["subtitle_track"]["count"] = len(subtitle_events)
             except Exception:
                 source_status["subtitle_track"]["status"] = "FAILED"
@@ -148,6 +153,14 @@ def build_transcript(
         write_ocr_events = False
         ocr_events = []
 
+    ocr_events = [
+        SourceTextEvent.model_validate({
+            **event.model_dump(),
+            "normalized_text": normalize_text(event.text, language),
+            "provenance": {**event.provenance, "language": language},
+        })
+        for event in ocr_events
+    ]
     build = build_canonical_transcript(
         video_id=manifest["video_id"],
         duration_ms=source_duration_ms,
@@ -190,11 +203,15 @@ def _build_selected(args, root, asr_path, duration_ms, metadata):
                 statuses[source] = {"status": "FAILED", "count": 0}
                 continue
             groups[source] = asr_events_from_payload(
-                read_json_object(asr_path), payload_path=asr_path
+                read_json_object(asr_path), payload_path=asr_path,
+                language=metadata.get("asr_language") or "zh",
             )
             statuses[source] = {"status": "READY", "count": len(groups[source]), "path": "asr.json"}
         elif source == "subtitle_track" and args.subtitle_file:
-            groups[source] = parse_subtitle_file(Path(args.subtitle_file))
+            groups[source] = parse_subtitle_file(
+                Path(args.subtitle_file),
+                language=metadata.get("subtitle_language") or metadata.get("asr_language") or "zh",
+            )
             statuses[source] = {
                 "status": "READY",
                 "count": len(groups[source]),
@@ -202,6 +219,7 @@ def _build_selected(args, root, asr_path, duration_ms, metadata):
             }
         else:
             item = snapshot["sources"].get(source, {"status": "ABSENT", "count": 0})
+            language = item.get("language") or metadata.get("asr_language") or "zh"
             statuses[source] = {k: v for k, v in item.items() if k != "body"}
             groups[source] = [
                 SourceTextEvent(
@@ -210,14 +228,14 @@ def _build_selected(args, root, asr_path, duration_ms, metadata):
                     start_ms=round(cue["from"] * 1000),
                     end_ms=round(cue["to"] * 1000),
                     text=cue["content"],
-                    normalized_text=normalize_text(cue["content"]),
+                    normalized_text=normalize_text(cue["content"], language),
                     provenance={
                         "path": "bilibili-subtitles.json",
                         "cue_index": cue.get("cue_index", index - 1),
                         "bvid": snapshot["bvid"],
                         "cid": snapshot["cid"],
                         "track_id": item.get("track_id"),
-                        "language": item.get("language"),
+                        "language": language,
                     },
                 )
                 for index, cue in enumerate(item.get("body", []), 1)

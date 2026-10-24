@@ -11,8 +11,9 @@ URL = "https://www.youtube.com/watch?v=ab-cd_ef123"
 
 
 @pytest.fixture
-def local_stages(monkeypatch):
+def local_stages(monkeypatch, request):
     calls = []
+    language, text = getattr(request, "param", ("en", "Hello world"))
 
     def forbidden(*args, **kwargs):
         pytest.fail("YouTube must not query Bilibili subtitles or discover a report model")
@@ -39,12 +40,14 @@ def local_stages(monkeypatch):
 
     def asr(*args, **kwargs):
         assert kwargs["backend"] == "faster-whisper"
-        assert kwargs["language"] == "en"
+        assert kwargs["language"] == language
         calls.append("asr")
-        segments = [{"ordinal": 0, "start_ms": 0, "end_ms": 2000, "text": "Hello world"}]
+        segments = [{"ordinal": 0, "start_ms": 0, "end_ms": 2000, "text": text}]
         return SimpleNamespace(
             segments=segments,
-            to_dict=lambda: {"backend": "faster-whisper", "language": "en", "segments": segments},
+            to_dict=lambda: {
+                "backend": "faster-whisper", "language": language, "segments": segments
+            },
         )
 
     class Runner:
@@ -55,7 +58,7 @@ def local_stages(monkeypatch):
 
         async def run(self, run):
             calls.append("report")
-            assert "Hello world" in (run / "transcript.md").read_text()
+            assert text in (run / "transcript.md").read_text()
             (run / "report.html").write_text("<html>Fixture</html>")
 
     def image(run):
@@ -133,3 +136,15 @@ def test_youtube_reuses_media_and_asr_across_transcript_modes(tmp_path, local_st
     assert result["download_reused_from"] == runs[0].name
     assert result["asr_reused_from"] == runs[0].name
     assert local_stages == ["download", "audio", "asr", "audio"]
+
+
+@pytest.mark.parametrize(
+    "local_stages", [("ja", "私は東京の図書館で勉強します。")], indirect=True
+)
+def test_japanese_transcript_reaches_report_input_unchanged(tmp_path, local_stages):
+    run = pipeline.create_run(
+        tmp_path, URL, transcript_mode="auto", asr_backend="faster-whisper", asr_language="ja"
+    )
+    result = pipeline.generate(run)
+    assert result["state"] == "RENDERED", result
+    assert local_stages == ["download", "audio", "asr", "report"]
