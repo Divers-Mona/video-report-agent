@@ -49,12 +49,16 @@ def test_invalid_link_rejected_before_run_creation(tmp_path, prefix, link):
 
 
 AGENT_URL = "https://www.bilibili.com/video/BV1uhY46kExs"
-AGENT_TITLE = "【Agent planning 核心就是把复杂长任务拆成可执行的子任务，在执行中根据反馈动态调整，并通过协调与权限控制可靠地完成最终目标！】"
+AGENT_TITLE = (
+    "【Agent planning 核心就是把复杂长任务拆成可执行的子任务，在执行中根据反馈动态调整，"
+    "并通过协调与权限控制可靠地完成最终目标！】"
+)
 
 
 @pytest.mark.parametrize("value", [
     AGENT_TITLE + AGENT_URL + "?vd_source=4a10906fc2b3dfee7559f7a5cfbb49d2",
-    AGENT_TITLE + f"[{AGENT_URL}?vd\\_source=4a10906fc2b3dfee7559f7a5cfbb49d2]({AGENT_URL}?vd_source=4a10906fc2b3dfee7559f7a5cfbb49d2)",
+    AGENT_TITLE + f"[{AGENT_URL}?vd\\_source=4a10906fc2b3dfee7559f7a5cfbb49d2]"
+    f"({AGENT_URL}?vd_source=4a10906fc2b3dfee7559f7a5cfbb49d2)",
     AGENT_URL.removeprefix("https://"),
     AGENT_TITLE + AGENT_URL.removeprefix("https://"),
     AGENT_TITLE + f"[视频]({AGENT_URL.removeprefix('https://')})",
@@ -89,7 +93,9 @@ def test_bilibili_412_explains_download_failure(tmp_path, monkeypatch, value):
 
     def runner(command, **kwargs):
         commands.append(command)
-        return SimpleNamespace(returncode=1, stderr="HTTP Error 412: Precondition Failed", stdout="")
+        return SimpleNamespace(
+            returncode=1, stderr="HTTP Error 412: Precondition Failed", stdout=""
+        )
 
     source = validate_bilibili_url(value)
     with pytest.raises(UrlIngestError, match="视频链接已识别.*HTTP 412"):
@@ -124,10 +130,14 @@ def test_download_selects_audio_only_when_requested(tmp_path, monkeypatch, audio
     assert result.media_path.suffix == (".m4a" if audio_only else ".mp4")
 
 
-@pytest.mark.parametrize("duration,allowed", [(10800, True), (10801, True), (18000, True), (18000.1, False), (None, False)])
+@pytest.mark.parametrize(
+    "duration,allowed",
+    [(10800, True), (10801, True), (18000, True), (18000.1, False), (None, False)],
+)
 def test_duration_limit(tmp_path, duration, allowed):
-    from video_report_agent.ingest import _metadata
     from yt_dlp.utils import match_filter_func
+
+    from video_report_agent.ingest import _metadata
 
     info = {"title": "Test", "uploader": "UP", "duration": duration}
     assert (match_filter_func("duration <= 18000")(info) is None) == allowed
@@ -172,3 +182,37 @@ def test_short_share_validates_redirect(tmp_path, monkeypatch, destination):
             create_run(tmp_path, value)
         assert not list(tmp_path.iterdir())
     assert calls == [("https://b23.tv/Rfx6XG4", {"follow_redirects": False, "timeout": 10})]
+
+
+YT_WATCH = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+def test_youtube_watch_creates_canonical_run(tmp_path):
+    run = create_run(tmp_path, YT_WATCH)
+    metadata = json.loads((run / "input.json").read_text())
+    assert metadata["url"] == YT_WATCH
+    assert metadata["video_id"] == "youtube-dQw4w9WgXcQ"
+
+
+@pytest.mark.parametrize("link", [
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=30s",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+])
+def test_youtube_variants_normalize_to_watch(tmp_path, link):
+    run = create_run(tmp_path, link)
+    metadata = json.loads((run / "input.json").read_text())
+    assert metadata["url"] == YT_WATCH
+    assert metadata["video_id"] == "youtube-dQw4w9WgXcQ"
+
+
+@pytest.mark.parametrize("link", [
+    "https://www.youtube.com/playlist?list=PLabc",
+    "https://www.youtube.com/@somechannel",
+    "https://www.youtube.com/watch?v=shortid",
+    "https://example.com/video/dQw4w9WgXcQ",
+])
+def test_youtube_non_video_rejected(tmp_path, link):
+    with pytest.raises(UrlIngestError):
+        create_run(tmp_path, link)
+    assert not list(tmp_path.iterdir())

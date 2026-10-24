@@ -152,6 +152,8 @@ class Store:
             if identity and identity.startswith("bilibili-"):
                 _, external, page = identity.split("-")
                 platform, part = "bilibili", int(page[1:])
+            elif identity and identity.startswith("youtube-"):
+                platform, external = "youtube", identity.removeprefix("youtube-")
             if identity:
                 db.execute(
                     "INSERT INTO videos VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING",

@@ -139,7 +139,7 @@ def _asr_costs(run, status, asr_rate, asr=None):
         asr_cost, asr_basis = 0, "reused"
     elif status.get("asr_performed") is False:
         asr_cost, asr_basis = 0, "not_used"
-    elif asr.get("backend") == "mlx":
+    elif asr.get("backend") in {"mlx", "faster-whisper"}:
         asr_cost, asr_basis = 0, "local"
     elif asr.get("backend") == "paraformer" and number(duration) and asr_rate is not None:
         asr_cost, asr_basis = duration / 1000 * asr_rate, "duration_estimate"

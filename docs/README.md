@@ -10,6 +10,7 @@
 - [报告与评测口径](PROJECT.md#评测口径)
 - [报告设计偏好](report-design-preferences.md)
 - [安装与使用](../README.md)
+- [Windows 本地 WSL2 部署](local-wsl.md)
 - [独立 Skill 下载包使用说明](skill-bundle/README.md)
 - [示例 HTML](examples/report.html) / [完整长图](examples/report.png)
 - [合成 smoke 与可选评测](../evals/report-review/README.md)

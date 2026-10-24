@@ -7,7 +7,7 @@ import shutil
 import time
 from pathlib import Path
 
-from .ingest import UrlIngestError, _metadata, validate_bilibili_url
+from .ingest import UrlIngestError, _metadata, resolve_source
 from .reuse import validated_asr, validated_transcript
 from .storage import TERMINAL, Store
 
@@ -91,7 +91,7 @@ def cleanup_cancelled_run(run: Path, *, database_path=None) -> None:
 
     download = run / "download"
     try:
-        source = validate_bilibili_url(metadata["url"])
+        source = resolve_source(metadata["url"])
         info = download / "source.info.json"
         audio_only = metadata.get("transcript_mode", "asr-only") == "asr-only"
         media = next(

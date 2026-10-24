@@ -101,10 +101,10 @@ Replace `standard` with `brief` for an overview. Open `output/report.html` in a 
 
 ## Option 2: run the complete CLI pipeline
 
-Start with a Bilibili URL and automate downloading, transcription and generation:
+Start with a Bilibili / YouTube single-video URL and automate downloading, transcription and generation:
 
 ```text
-Bilibili URL
+Bilibili / YouTube URL
   → yt-dlp download → FFmpeg audio extraction
   → ASR → canonical transcript (text, source IDs, times)
   → Pi RPC + video-report Skill → HTML
@@ -144,6 +144,16 @@ ASR_MODEL=paraformer-v2
 DASHSCOPE_API_KEY=your-dashscope-api-key
 ```
 
+For local CPU transcription, use faster-whisper. Install it with `uv sync --extra local-asr`, or follow the [WSL setup guide](docs/local-wsl.md) when using the WSL launcher. Chinese and English use the same multilingual model:
+
+```dotenv
+ASR_BACKEND=faster-whisper
+ASR_MODEL=small
+ASR_LANGUAGE=zh
+```
+
+`--asr-language` selects the audio language for one run and overrides `ASR_LANGUAGE`. With neither set, the default is `zh`. Set `auto` (via `--asr-language auto` or `.env`'s `ASR_LANGUAGE=auto`) to let faster-whisper or MLX detect the spoken language; paraformer still accepts only `zh`. This option controls speech recognition, not the report's output language.
+
 For local Apple Silicon transcription, replace the ASR settings with:
 
 ```dotenv
@@ -151,9 +161,31 @@ ASR_BACKEND=mlx
 ASR_MODEL=mlx-community/whisper-large-v3-turbo
 ```
 
-The pipeline includes `mlx` and `paraformer` backends, including the Fun-ASR file-transcription models adapted in the code. Other ASR tools work with the standalone Skill; integrating them into this pipeline requires an adapter. Cloud ASR uploads audio, and the report model receives the transcript content needed for generation.
+The pipeline includes `mlx`, optional CPU/int8 `faster-whisper`, and `paraformer` backends, including the Fun-ASR file-transcription models adapted in the code. Other ASR tools work with the standalone Skill; integrating them into this pipeline requires an adapter. Cloud ASR uploads audio, and the report model receives the transcript content needed for generation.
 
 ### Generate and read
+
+The local version is a CLI; no separate website server is required. If using a local report model, start the model service configured by `PI_BASE_URL` first.
+
+**Windows PowerShell (after WSL setup)**
+
+Replace the directory with your checkout path. Each `generate` command processes one video:
+
+```powershell
+cd D:\Project\video-report-agent
+.\video-report.cmd models
+.\video-report.cmd doctor
+
+# Chinese Bilibili video
+.\video-report.cmd generate "https://www.bilibili.com/video/BV..." --asr-backend faster-whisper --asr-language zh
+
+# English YouTube video (19-second test sample)
+.\video-report.cmd generate "https://www.youtube.com/watch?v=jNQXAC9IVRw" --asr-backend faster-whisper --asr-language en
+```
+
+`models` lists report models; `doctor` checks the environment. Neither generates a report. Use `generate --help` for generation options, or append `--report-mode brief` for a concise overview. The default mode is `standard`.
+
+**Installed Linux / macOS environment**
 
 ```sh
 # Standard reading
@@ -163,17 +195,27 @@ uv run video-report generate 'https://www.bilibili.com/video/BV...'
 uv run video-report generate 'https://www.bilibili.com/video/BV...' --report-mode brief
 ```
 
+With the `local-asr` dependencies installed, run an English YouTube video with:
+
+```sh
+uv run video-report generate 'https://www.youtube.com/watch?v=jNQXAC9IVRw' --asr-backend faster-whisper --asr-language en
+```
+
+Use `--asr-model medium` or `--asr-model large-v3` to try another transcription model. In contrast, `--model` selects the report-generation model. New transcription weights download on first use and are cached; faster-whisper itself does not need reinstalling. Larger models generally need more memory and CPU time; their speed and accuracy were not tested in this run. Set `ASR_MODEL` and `ASR_LANGUAGE` in `.env` for persistent defaults.
+
 Outputs live in `runs/<run-id>/`. Read `report.html` or `report.png`; use `transcript.md` for source review. HTML can complete even if image export fails, so check `image_error` in `status.json` before assuming the PNG exists.
 
-The CLI defaults to creator-provided subtitles → Bilibili ai-zh → ASR and stops collecting once usable subtitles are available. Choose `--sources asr` for ASR alone, or list multiple sources for manual comparison/fusion. Web source controls are available only in Local advanced settings; Web OCR is disabled. The Core CLI retains legacy `--transcript-mode fused` subtitle/OCR support with `uv sync --extra enhancement`; include `--extra mlx` for local MLX. See the [source selection guide](docs/subtitle-sources.md) for subtitle login and transcript-only commands, or run `uv run video-report generate --help` for all options.
+For Bilibili, the CLI defaults to creator-provided subtitles → Bilibili ai-zh → ASR and stops collecting once usable subtitles are available. YouTube auto mode uses ASR directly; subtitle_track and bilibili_ai selections are unsupported. Choose `--sources asr` for ASR alone, or list multiple sources for manual comparison/fusion. Web source controls are available only in Local advanced settings; Web OCR is disabled. The Core CLI retains legacy `--transcript-mode fused` subtitle/OCR support with `uv sync --extra enhancement`; include `--extra mlx` for local MLX. See the [source selection guide](docs/subtitle-sources.md) for subtitle login and transcript-only commands, or run `uv run video-report generate --help` for all options.
+
+On 2026-10-19, the existing WSL2 setup completed the 19-second English video *Me at the zoo* using faster-whisper `small` / CPU / INT8, explicit `en`, and a local report model. It produced an English transcript, a Chinese HTML report, and a PNG. The first sentence contained a recognition error that affected the report. This verifies completion of the pipeline, not perfect transcription or support quality across all languages. See the [WSL test notes](docs/local-wsl.md#英文视频实测).
 
 ## Runtime and data
 
 - **Storage:** standalone CLI uses `runs/state.sqlite3` by default for tasks, transcripts, report HTML and caches. Task-directory JSON, transcripts and HTML are execution exports; media, PNG, Pi sessions and diagnostic logs remain files. See [SQLite storage](docs/sqlite-storage.md).
-- **Configuration:** `.env` is read from the working directory; process environment variables take precedence. Pi configuration lives in `config/pi/` there. Missing model defaults are initialized; existing configuration is preserved. Set `PI_CODING_AGENT_DIR` before startup to choose another directory. Do not commit credentials.
+- **Configuration:** `.env` is read from the project root; process environment variables take precedence. Pi configuration lives in `config/pi/` there. Missing model defaults are initialized; existing configuration is preserved. Set `PI_CODING_AGENT_DIR` before startup to choose another directory. Do not commit credentials.
 - **Isolation:** the example uses `PI_TASK_ISOLATION=local`; Pi tools have your local user permissions. Docker mode requires an application image, Docker daemon and healthy task cleaner with the same scope. It does not fall back to local execution on failure. See [Core architecture](docs/ARCHITECTURE.md).
 - **Traces:** `run.trace.jsonl` records pipeline stages; `pi.events.jsonl` records model and tool events. Completion requires `agent_settled`, final assistant `stopReason == "stop"`, and HTML delivery checks.
-- **Limits:** built-in ingestion targets public Bilibili videos, without login or private-video access. Videos are limited to five hours, execution to 30 minutes. Submitted cloud ASR may continue charging after a local stop. Default understanding comes from the transcript, so visual-only information may be missing. Native Windows execution of the full pipeline is not presented as verified here.
+- **Limits:** built-in ingestion supports public Bilibili and YouTube single videos, without login, private-video access or playlist batch processing. YouTube accepts watch, youtu.be and shorts links. Videos are limited to five hours, execution to 30 minutes. Submitted cloud ASR may continue charging after a local stop. Default understanding comes from the transcript, so visual-only information may be missing. Windows users can use the [WSL2 CLI launcher](docs/local-wsl.md); native Windows execution is not presented as verified.
 
 ## Development and further reading
 

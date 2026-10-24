@@ -19,7 +19,11 @@ from urllib.parse import parse_qsl, urlsplit
 import httpx
 
 BILIBILI_HOSTS = frozenset({"bilibili.com", "www.bilibili.com"})
+YOUTUBE_HOSTS = frozenset(
+    {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+)
 _BVID_PATTERN = re.compile(r"BV[0-9A-Za-z]{10}")
+_YT_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{11}")
 _PAGE_PATTERN = re.compile(r"[0-9]+")
 _SOURCE_NAME = "source"
 MAX_VIDEO_SECONDS = 5 * 60 * 60
@@ -32,13 +36,21 @@ CommandRunner = Callable[..., Any]
 
 
 @dataclass(frozen=True)
-class BilibiliSource:
+class VideoSource:
+    """Common identity shared by every supported video platform."""
+
+    platform: str
+    submitted_url: str
+    canonical_url: str
+    platform_label: str
+
+
+@dataclass(frozen=True)
+class BilibiliSource(VideoSource):
     """The validated public source URL and its stable BVID identity."""
 
     bvid: str
     page_number: int
-    submitted_url: str
-    canonical_url: str
 
     @property
     def video_id(self) -> str:
@@ -50,10 +62,25 @@ class BilibiliSource:
 
 
 @dataclass(frozen=True)
+class YoutubeSource(VideoSource):
+    """The validated public YouTube URL and its stable 11-character video ID."""
+
+    video_id_raw: str
+
+    @property
+    def video_id(self) -> str:
+        return f"youtube-{self.video_id_raw}"
+
+    @property
+    def cache_key(self) -> str:
+        return self.video_id_raw
+
+
+@dataclass(frozen=True)
 class DownloadResult:
     """Verified yt-dlp output and public metadata."""
 
-    source: BilibiliSource
+    source: VideoSource
     media_path: Path
     info_path: Path
     title: str
@@ -141,11 +168,92 @@ def validate_bilibili_url(value: object) -> BilibiliSource:
 
     submitted_url, bvid, page_number, canonical_url = _parse_bilibili_url(value)
     return BilibiliSource(
-        bvid=bvid,
-        page_number=page_number,
+        platform="bilibili",
         submitted_url=submitted_url,
         canonical_url=canonical_url,
+        platform_label="Bilibili",
+        bvid=bvid,
+        page_number=page_number,
     )
+
+
+def _parse_youtube_url(value: object) -> tuple[str, str]:
+    """Return (submitted_url, video_id) for one public YouTube video link."""
+
+    if not isinstance(value, str):
+        raise UrlIngestError("URL_INVALID", "url must be a string")
+    submitted_url = value.strip()
+    # Share text may prefix the link; reuse the same bracket/markdown stripping.
+    link = re.sub(r"^【.*】\s*", "", submitted_url, count=1, flags=re.DOTALL).strip()
+    markdown_link = re.fullmatch(
+        r"\[[^\]\n]*\]\(((?:https?://|www\.)[^\s)]+)\)", link
+    )
+    if markdown_link:
+        link = markdown_link.group(1)
+    if link.startswith("www."):
+        link = "https://" + link
+    # A bare 11-character ID is normalized to its canonical watch URL.
+    if _YT_ID_PATTERN.fullmatch(link):
+        return submitted_url, link
+    parts = urlsplit(link)
+    if parts.scheme not in {"http", "https"} or parts.netloc.lower() not in YOUTUBE_HOSTS:
+        raise UrlIngestError("URL_INVALID", "url must be a YouTube video link")
+    host = parts.netloc.lower().removeprefix("www.")
+    query = dict(parse_qsl(parts.query))
+    if host == "youtu.be":
+        path_id = parts.path.lstrip("/").split("/")
+        if len(path_id) != 1 or not _YT_ID_PATTERN.fullmatch(path_id[0]):
+            raise UrlIngestError("URL_INVALID", "url must be a YouTube video link")
+        return submitted_url, path_id[0]
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if segments and segments[0] == "watch":
+        video_id = query.get("v")
+        if "list" in query or not (video_id and _YT_ID_PATTERN.fullmatch(video_id)):
+            raise UrlIngestError("URL_INVALID", "url must be a YouTube video link")
+        return submitted_url, video_id
+    if segments and segments[0] == "shorts" and len(segments) == 2:
+        if not _YT_ID_PATTERN.fullmatch(segments[1]):
+            raise UrlIngestError("URL_INVALID", "url must be a YouTube video link")
+        return submitted_url, segments[1]
+    raise UrlIngestError("URL_INVALID", "url must be a YouTube video link")
+
+
+def validate_youtube_url(value: object) -> YoutubeSource:
+    """Validate a public YouTube watch/shorts/youtu.be link to one video."""
+
+    submitted_url, video_id = _parse_youtube_url(value)
+    canonical_url = f"https://www.youtube.com/watch?v={video_id}"
+    return YoutubeSource(
+        platform="youtube",
+        submitted_url=submitted_url,
+        canonical_url=canonical_url,
+        platform_label="YouTube",
+        video_id_raw=video_id,
+    )
+
+
+def resolve_source(value: object) -> VideoSource:
+    """Dispatch a submitted link to its platform parser before any run is created."""
+
+    if not isinstance(value, str):
+        raise UrlIngestError("URL_INVALID", "url must be a string")
+    text = value.strip()
+    link = re.sub(r"^【.*】\s*", "", text, count=1, flags=re.DOTALL).strip()
+    markdown_link = re.fullmatch(
+        r"\[[^\]\n]*\]\(((?:https?://|www\.)[^\s)]+)\)", link
+    )
+    if markdown_link:
+        link = markdown_link.group(1)
+    lowered = link.lower()
+    if "bilibili.com" in lowered or "b23.tv" in lowered or _BVID_PATTERN.fullmatch(link):
+        return validate_bilibili_url(value)
+    if (
+        "youtube.com" in lowered
+        or "youtu.be" in lowered
+        or _YT_ID_PATTERN.fullmatch(link)
+    ):
+        return validate_youtube_url(value)
+    raise UrlIngestError("URL_INVALID", "url must be a Bilibili or YouTube video link")
 
 
 def probe_bilibili_video(
@@ -347,7 +455,7 @@ def _printed_media_path(stdout: object, download_dir: Path) -> Path:
     raise UrlIngestError("DOWNLOAD_ERROR", "yt-dlp did not report a media path")
 
 
-def _metadata(info_path: Path, source: BilibiliSource) -> tuple[str, str, str]:
+def _metadata(info_path: Path, source: VideoSource) -> tuple[str, str, str]:
     try:
         payload = json.loads(info_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -370,12 +478,12 @@ def _metadata(info_path: Path, source: BilibiliSource) -> tuple[str, str, str]:
         raise UrlIngestError("DOWNLOAD_ERROR", "yt-dlp metadata has no uploader")
     title = title.strip()
     uploader = uploader.strip()
-    attribution = f"Bilibili；{uploader}；《{title}》；{source.canonical_url}"
+    attribution = f"{source.platform_label}；{uploader}；《{title}》；{source.canonical_url}"
     return title, uploader, attribution
 
 
 def download_bilibili_video(
-    source: BilibiliSource,
+    source: VideoSource,
     run_dir: Path,
     *,
     runner: CommandRunner | None = None,

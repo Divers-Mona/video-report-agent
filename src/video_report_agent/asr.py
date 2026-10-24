@@ -12,13 +12,15 @@ from typing import Any, Protocol
 
 from video_report_agent.schemas import AsrSegment
 
+from .asr_paths import resolve_faster_whisper_cache_root, resolve_faster_whisper_model
 from .redaction import redact
 
 DEFAULT_ASR_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_FASTER_WHISPER_MODEL = "small"
 
 
 class AsrError(RuntimeError):
-    """Raised when mlx-whisper cannot produce usable timestamped segments."""
+    """Raised when an ASR backend cannot produce usable timestamped segments."""
 
 
 @dataclass(frozen=True)
@@ -150,13 +152,10 @@ def normalize_asr_segments(raw_segments: object) -> NormalizedAsrSegments:
 
 
 def _transcribe_mlx(audio_path: Path, *, model: str, language: str = "zh") -> AsrRun:
-    """Run mlx-whisper explicitly in Chinese and retain its original result."""
+    """Run mlx-whisper with the given language (or auto-detect) and retain its original result."""
 
     if not audio_path.is_file() or audio_path.stat().st_size == 0:
         raise AsrError(f"audio input is missing or empty: {audio_path}")
-    if language != "zh":
-        raise AsrError("local ASR only permits explicit Chinese ASR")
-
     try:
         import mlx_whisper
     except ImportError as exc:
@@ -167,7 +166,7 @@ def _transcribe_mlx(audio_path: Path, *, model: str, language: str = "zh") -> As
         raw_result = mlx_whisper.transcribe(
             str(audio_path),
             path_or_hf_repo=model,
-            language=language,
+            language=None if language == "auto" else language,
             verbose=False,
         )
     except Exception as exc:
@@ -181,7 +180,7 @@ def _transcribe_mlx(audio_path: Path, *, model: str, language: str = "zh") -> As
     return AsrRun(
         engine="mlx-whisper",
         model=model,
-        language=language,
+        language=raw_result.get("language", language),
         elapsed_ms=elapsed_ms,
         segments=normalized.segments,
         raw_result=raw_result,
@@ -219,6 +218,71 @@ class MlxWhisperBackend:
             ).result()
 
 
+class FasterWhisperBackend:
+    """CPU-only faster-whisper adapter that reuses the shared segment normalizer."""
+
+    default_model = DEFAULT_FASTER_WHISPER_MODEL
+
+    def __init__(
+        self, model: str = DEFAULT_FASTER_WHISPER_MODEL, download_root: Path | None = None
+    ):
+        self.model = model
+        self.resolved_model = resolve_faster_whisper_model(model)
+        self.download_root = resolve_faster_whisper_cache_root(download_root)
+
+    def transcribe(self, audio_path: Path, language: str = "zh") -> AsrRun:
+        if not audio_path.is_file() or audio_path.stat().st_size == 0:
+            raise AsrError(f"audio input is missing or empty: {audio_path}")
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise AsrError("faster-whisper is not installed in this project environment") from exc
+
+        started_at = perf_counter()
+        try:
+            engine = WhisperModel(
+                self.resolved_model,
+                device="cpu",
+                compute_type="int8",
+                download_root=str(self.download_root),
+            )
+            segments, info = engine.transcribe(
+                str(audio_path), language=None if language == "auto" else language
+            )
+            raw_segments = [
+                {"start": segment.start, "end": segment.end, "text": segment.text, "words": []}
+                for segment in segments
+            ]
+        except Exception as exc:
+            raise AsrError(f"faster-whisper transcription failed: {type(exc).__name__}") from exc
+        elapsed_ms = round((perf_counter() - started_at) * 1000)
+        detected_language = getattr(info, "language", language)
+        raw_result = {
+            "segments": raw_segments,
+            "language": detected_language,
+            "language_probability": getattr(info, "language_probability", None),
+            "duration": getattr(info, "duration", None),
+        }
+        normalized = normalize_asr_segments(raw_segments)
+        return AsrRun(
+            engine="faster-whisper",
+            model=self.model,
+            language=detected_language,
+            elapsed_ms=elapsed_ms,
+            segments=normalized.segments,
+            raw_result=raw_result,
+            backend="faster-whisper",
+            provider="local",
+            dropped_empty_raw_segment_ordinals=normalized.dropped_empty_raw_segment_ordinals,
+            dropped_non_positive_raw_segment_ordinals=(
+                normalized.dropped_non_positive_raw_segment_ordinals
+            ),
+            dropped_unrepresentable_raw_segment_ordinals=(
+                normalized.dropped_unrepresentable_raw_segment_ordinals
+            ),
+        )
+
+
 def transcribe_audio(
     audio_path: Path,
     *,
@@ -231,6 +295,8 @@ def transcribe_audio(
 ) -> AsrRun:
     if backend == "mlx":
         return MlxWhisperBackend(model).transcribe(audio_path, language)
+    if backend == "faster-whisper":
+        return FasterWhisperBackend(model).transcribe(audio_path, language)
     if backend == "paraformer":
         from .paraformer import ParaformerBackend
 

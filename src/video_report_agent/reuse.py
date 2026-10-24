@@ -190,7 +190,10 @@ def validated_transcript(candidate: Path, metadata: dict):
         if needs_asr and validated_asr(candidate, metadata) is None:
             return None
         names = list(manifest["artifacts"].values()) + (["asr.json"] if needs_asr else [])
-        if metadata.get("transcript_mode") == "auto" or (
+        if (
+            metadata.get("transcript_mode") == "auto"
+            and metadata["video_id"].startswith("bilibili-")
+        ) or (
             selected and any(s != "asr" for s in selected)
         ):
             names.append("bilibili-subtitles.json")
