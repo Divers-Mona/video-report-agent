@@ -15,7 +15,7 @@ from .asr import AsrError, transcribe_audio
 from .audio import AudioExtractionError, extract_audio
 from .bilibili_subtitles import SubtitleError, fetch_subtitles, validate_sources
 from .failures import asr_failure
-from .ingest import UrlIngestError, download_bilibili_video, resolve_source
+from .ingest import UrlIngestError, download_audio_only, download_bilibili_video, resolve_source
 from .media_config import resolve_media_config
 from .paraformer import CloudAsrError
 from .pi import PiError, PiRunner
@@ -33,7 +33,7 @@ from .reuse import (
 from .storage import CacheProductionFailed, Store
 from .trace import RunTrace
 from .transcript import build_transcript
-from .transcript_foundation import parse_roi
+from .transcript_foundation import parse_roi, subtitle_file_language
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -117,6 +117,13 @@ def create_run(
         "ocr_roi": ocr_roi,
         "subtitle_file": "subtitle" + Path(subtitle_file).suffix if subtitle_file else None,
     }
+    if subtitle_file or subtitle_content is not None:
+        metadata["subtitle_language"] = (
+            subtitle_file_language(Path(subtitle_file or subtitle_name))
+            or asr_language
+            or os.getenv("ASR_LANGUAGE")
+            or "zh"
+        )
     status = {
         "run_id": run.name,
         "state": "QUEUED",
@@ -296,9 +303,7 @@ def generate(run: Path, *, database_path=None, execution_id=None) -> dict:
                 with trace.span("download", input={"video_id": metadata["video_id"]}) as detail:
                     source = resolve_source(metadata["url"])
                     request_subtitles = metadata.get("transcript_mode") == "fused"
-                    audio_only = (
-                        bool(selected) or metadata.get("transcript_mode", "asr-only") == "asr-only"
-                    )
+                    audio_only = download_audio_only(metadata)
                     download_key = cache_key("download", metadata)
                     download_claim, cache = acquire_cache(
                         store,

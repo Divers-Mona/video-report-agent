@@ -35,6 +35,13 @@ _PROGRESS_PREFIX = "vreport-progress:"
 CommandRunner = Callable[..., Any]
 
 
+def download_audio_only(metadata: dict) -> bool:
+    """Use one download type for execution, cache identity and cancellation cleanup."""
+    return bool(metadata.get("transcript_sources")) or metadata.get(
+        "transcript_mode", "asr-only"
+    ) in {"auto", "asr-only"}
+
+
 @dataclass(frozen=True)
 class VideoSource:
     """Common identity shared by every supported video platform."""
@@ -208,7 +215,7 @@ def _parse_youtube_url(value: object) -> tuple[str, str]:
     segments = [seg for seg in parts.path.split("/") if seg]
     if segments and segments[0] == "watch":
         video_id = query.get("v")
-        if "list" in query or not (video_id and _YT_ID_PATTERN.fullmatch(video_id)):
+        if not (video_id and _YT_ID_PATTERN.fullmatch(video_id)):
             raise UrlIngestError("URL_INVALID", "url must be a YouTube video link")
         return submitted_url, video_id
     if segments and segments[0] == "shorts" and len(segments) == 2:
@@ -244,14 +251,17 @@ def resolve_source(value: object) -> VideoSource:
     )
     if markdown_link:
         link = markdown_link.group(1)
-    lowered = link.lower()
-    if "bilibili.com" in lowered or "b23.tv" in lowered or _BVID_PATTERN.fullmatch(link):
+    if _BVID_PATTERN.fullmatch(link):
         return validate_bilibili_url(value)
-    if (
-        "youtube.com" in lowered
-        or "youtu.be" in lowered
-        or _YT_ID_PATTERN.fullmatch(link)
-    ):
+    if _YT_ID_PATTERN.fullmatch(link):
+        return validate_youtube_url(value)
+    try:
+        host = urlsplit("https://" + link if link.startswith("www.") else link).hostname
+    except ValueError as exc:
+        raise UrlIngestError("URL_INVALID", "url must be a valid video link") from exc
+    if host in BILIBILI_HOSTS or host == "b23.tv":
+        return validate_bilibili_url(value)
+    if host in YOUTUBE_HOSTS:
         return validate_youtube_url(value)
     raise UrlIngestError("URL_INVALID", "url must be a Bilibili or YouTube video link")
 
@@ -462,6 +472,8 @@ def _metadata(info_path: Path, source: VideoSource) -> tuple[str, str, str]:
         raise UrlIngestError("DOWNLOAD_ERROR", "yt-dlp metadata is unavailable") from exc
     if not isinstance(payload, dict):
         raise UrlIngestError("DOWNLOAD_ERROR", "yt-dlp metadata is invalid")
+    if payload.get("is_live") or payload.get("live_status") in {"is_live", "is_upcoming"}:
+        raise UrlIngestError("URL_INVALID", "暂不支持正在直播或即将直播的视频。")
     duration = payload.get("duration")
     if (
         isinstance(duration, bool) or not isinstance(duration, (int, float))
@@ -505,7 +517,8 @@ def download_bilibili_video(
         "--ignore-config",
         "--no-playlist",
         "--match-filter",
-        f"duration <= {MAX_VIDEO_SECONDS}",
+        f"duration <= {MAX_VIDEO_SECONDS} & !is_live & live_status !=? is_live "
+        "& live_status !=? is_upcoming",
         "--break-on-reject",
         "-P",
         str(download_dir),
@@ -538,13 +551,13 @@ def download_bilibili_video(
     ):
         raise UrlIngestError(
             "VIDEO_DURATION_INVALID",
-            "当前支持的视频最长为 5 小时，请选择不超过 5 小时的视频。",
+            "当前仅支持不超过 5 小时的非直播视频，不支持正在直播或即将直播的视频。",
         )
     if getattr(completed, "returncode", 1) != 0:
         if "HTTP Error 412" in str(getattr(completed, "stderr", "")):
             raise UrlIngestError(
                 "DOWNLOAD_ERROR",
-                "视频链接已识别，但 Bilibili 拒绝了下载请求（HTTP 412）。"
+                f"视频链接已识别，但 {source.platform_label} 拒绝了下载请求（HTTP 412）。"
                 "请稍后重试；如果反复失败，请联系管理员。",
             )
         raise UrlIngestError(

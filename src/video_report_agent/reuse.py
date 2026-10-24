@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from .ingest import DownloadResult, UrlIngestError, _metadata
+from .ingest import DownloadResult, UrlIngestError, _metadata, download_audio_only
 from .schemas import AsrSegment
 from .storage import CacheProductionFailed, Store, encode
 from .transcript_foundation import FUSION_VERSION, NORMALIZER_VERSION
@@ -29,9 +29,7 @@ def cache_key(kind, metadata, documents=None):
     identity = {"video_id": metadata["video_id"], "processing_version": 1}
     if kind == "download":
         identity.update(
-            audio_only=bool(metadata.get("transcript_sources"))
-            or metadata.get("transcript_mode") == "auto"
-            or metadata.get("transcript_mode", "asr-only") == "asr-only",
+            audio_only=download_audio_only(metadata),
             request_subtitles=metadata.get("transcript_mode") == "fused",
         )
     else:
@@ -70,6 +68,10 @@ def cache_key(kind, metadata, documents=None):
         identity["subtitle_provided"] = bool(subtitle)
         identity["subtitle_format"] = Path(subtitle).suffix if subtitle else None
         identity["subtitle_content"] = (documents or {}).get(subtitle) if subtitle else None
+        if subtitle:
+            identity["subtitle_language"] = (
+                metadata.get("subtitle_language") or metadata.get("asr_language") or "zh"
+            )
         identity["downloaded_subtitles"] = (
             {
                 name: body

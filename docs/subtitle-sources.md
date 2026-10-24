@@ -38,6 +38,8 @@ BILIBILI_SUBTITLE_BROWSER=edge uv run video-report \
 
 字幕正文存于 `bilibili-subtitles.json`，与来源事件、规范单元、manifest 和 `transcript.md` 一起入库。新缓存身份包括路由模式、实际采用的来源、字幕正文及导入内容；自动路由、手动多路与旧 ASR-only 缓存各自独立。无 ASR 的转写不再要求 `asr.json` 才能验证和复用。
 
+导入字幕的语言按原文件名标记（如 `source.ja.srt`）→ 显式 `--asr-language` → `ASR_LANGUAGE` → 默认 `zh` 确定，保存为任务输入中的 `subtitle_language`。字幕导出为 `subtitle.srt` 等固定名称后，仍使用已保存的语言；完整转写缓存也区分该语言。仅中文做繁转简，已知非中文保持文字原样；字幕任务不因保存语言而加载 ASR 凭证。平台字幕使用该轨自身的语言元数据。
+
 ## 与已有 ASR 对照
 
 真实输入只放在忽略的 `.local/evals/`。manifest 示例：
