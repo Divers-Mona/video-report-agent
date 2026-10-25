@@ -6,7 +6,7 @@ Windows 通过 WSL2 Ubuntu 运行本项目 CLI，保留上游使用的 Linux 进
 
 需要已启用 WSL2，并安装 `Ubuntu-26.04`。Linux 依赖与缓存放在项目 `.tooling/wsl`，Python 环境单独使用 `.venv-wsl`；现有 Windows `.venv` 和 `.tooling` 不参与 WSL 运行。
 
-在 Ubuntu 中从项目根目录安装项目内工具。uv 固定为 0.12.22，Node.js 固定为 24.14.0；uv 管理 Python 3.12，Pi 固定为本地 npm 包 0.85.0。FFmpeg/FFprobe 使用 WSL Ubuntu 软件包：
+在 Ubuntu 中从项目根目录安装项目内工具。uv 固定为 0.12.22，Node.js 固定为 24.14.0；uv 管理 Python 3.12，Pi 固定为本地 npm 包 0.85.0。setup 还会安装 Deno 2.9.8，供 YouTube 的 JavaScript 挑战使用。FFmpeg/FFprobe 使用 WSL Ubuntu 软件包：
 
 ```sh
 cd /mnt/d/Project/video-report-agent
@@ -32,7 +32,26 @@ bash scripts/setup-wsl.sh
 sudo "$VENV/bin/python" -m playwright install-deps chromium
 ```
 
-安装脚本会在 `.venv-wsl` 安装锁定的 Python 依赖和 `local-asr` extra，在 `.tooling/wsl/pi` 安装 Pi 0.85.0，在项目缓存下载 Playwright Chromium，并预下载配置的 faster-whisper 权重。`playwright install-deps chromium` 以管理员权限安装 Chromium 所需的系统共享库和字体。使用字幕/OCR 的 `fused` 模式前，运行 `VIDEO_REPORT_WITH_ENHANCEMENT=1 bash scripts/setup-wsl.sh` 安装额外依赖。
+安装脚本会在 `.venv-wsl` 安装锁定的 Python 依赖和 `local-asr` extra，保留环境内其他已装包；在 `.tooling/wsl/pi` 安装 Pi 0.85.0，在项目缓存下载 Playwright Chromium，并预下载配置的 faster-whisper 权重。`playwright install-deps chromium` 以管理员权限安装 Chromium 所需的系统共享库和字体。使用字幕/OCR 的 `fused` 模式前，运行 `VIDEO_REPORT_WITH_ENHANCEMENT=1 bash scripts/setup-wsl.sh` 安装额外依赖。
+
+### YouTube JavaScript 依赖
+
+项目将 yt-dlp 2026.10.21 与其 default extra 指定的 `yt-dlp-ejs==0.8.0` 配对锁定，只直接安装所需 EJS 包，避免引入整个 default extra。更新 yt-dlp 时一并核对其 PyPI 元数据中的 EJS 版本并更新锁文件。EJS 的 core/lib 解题脚本随 Python 包显式安装，运行时不启用 `--remote-components ejs:github/npm`。
+
+`setup-wsl.sh` 在 Python 环境就绪后调用 `scripts/install-deno.sh`。该步骤从 [Deno 官方 v2.9.8 发布](https://github.com/denoland/deno/releases/tag/v2.9.8)下载 Linux x86_64／aarch64 压缩包和对应 `.sha256sum`，用 `sha256sum --check` 校验后只提取 `deno`，核对版本，再安装到 `.tooling/wsl/bin/deno`。已有相同版本时跳过；失败时保留原可执行文件。此步骤不需要 sudo，不写系统目录。`run-wsl.sh` 将该目录加入 PATH，并关闭 Deno 的更新检查。
+
+已有环境只补装 YouTube 依赖时，可在项目根目录执行以下步骤，保留现有 extra 和已装包；这组命令不调用 ASR 模型预下载脚本：
+
+```sh
+export UV_PROJECT_ENVIRONMENT="$PWD/.venv-wsl"
+export UV_PYTHON_INSTALL_DIR="$PWD/.tooling/wsl/python"
+export UV_CACHE_DIR="$PWD/.tooling/wsl/cache/uv"
+.tooling/wsl/bin/uv sync --locked --inexact --extra local-asr
+bash scripts/install-deno.sh
+bash scripts/run-wsl.sh doctor
+```
+
+YouTube 元数据检查可使用 `PATH="$PWD/.tooling/wsl/bin:$PATH" .venv-wsl/bin/yt-dlp -v --ignore-config --skip-download --no-playlist --list-formats "https://www.youtube.com/watch?v=jNQXAC9IVRw"`，确认日志识别到 Deno、EJS 并列出音频格式；该命令不下载媒体。
 
 ## 配置与选择模型
 
@@ -61,7 +80,7 @@ cd D:\Project\video-report-agent
 
 WSL 内也可在任意目录运行 `bash /mnt/d/Project/video-report-agent/scripts/run-wsl.sh doctor`。默认产物在 `runs/<run-id>/`，包括 `transcript.md`、来源记录、`report.html` 和可能生成的 `report.png`。
 
-`doctor` 检查 Python、uv、Node/npm、Pi、yt-dlp、FFmpeg/FFprobe、Playwright Chromium 启动、本地 `/models` 可用性及本地 ASR 权重，不发送模型生成请求。启用 faster-whisper 时，它还会将一个临时合成短 WAV 交给 faster-whisper 的真实音频解码器，验证 PyAV API 兼容性；这一步不加载模型权重，也不做语音识别。`local-asr` extra 将 PyAV 限定在 `>=11,<19`：faster-whisper 1.2.1 仍会向 `av.open` 传 `metadata_errors`，而 PyAV 19 已删除此参数。ASR 缓存检查只读取当前 faster-whisper 版本解析到的 main revision，并确认 `config.json`、`model.bin` 和 `tokenizer.json` 均非空；不会实例化模型或联网下载。若当前 provider 不是 `local`，本地模型发现会标记为跳过。报告生成仍需用户自行判断内容准确性；启动检查和 mock 服务验证不代表真实 LLM 报告质量。
+`doctor` 检查 Python、uv、Node/npm、Pi、yt-dlp、FFmpeg/FFprobe、Playwright Chromium 启动、本地 `/models` 可用性及本地 ASR 权重，不发送模型生成请求。它还离线检查 Deno 最低版本、EJS 版本与当前 yt-dlp 的配对要求，以及本地 core/lib 脚本是否可读且非空。启用 faster-whisper 时，它还会将一个临时合成短 WAV 交给 faster-whisper 的真实音频解码器，验证 PyAV API 兼容性；这一步不加载模型权重，也不做语音识别。`local-asr` extra 将 PyAV 限定在 `>=11,<19`：faster-whisper 1.2.1 仍会向 `av.open` 传 `metadata_errors`，而 PyAV 19 已删除此参数。ASR 缓存检查只读取当前 faster-whisper 版本解析到的 main revision，并确认 `config.json`、`model.bin` 和 `tokenizer.json` 均非空；不会实例化模型或联网下载。若当前 provider 不是 `local`，本地模型发现会标记为跳过。报告生成仍需用户自行判断内容准确性；启动检查和 mock 服务验证不代表真实 LLM 报告质量。
 
 ## 本地语音识别
 

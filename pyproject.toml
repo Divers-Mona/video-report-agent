@@ -14,7 +14,9 @@ dependencies = [
     "playwright>=1.62.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.3",
-    "yt-dlp>=2026.8.19",
+    # Keep the solver paired with the version required by yt-dlp's default extra.
+    "yt-dlp==2026.10.21",
+    "yt-dlp-ejs==0.8.0",
 ]
 
 [project.scripts]

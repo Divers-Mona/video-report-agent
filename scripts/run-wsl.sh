@@ -9,6 +9,7 @@ export UV_PROJECT_ENVIRONMENT="$VENV"
 export UV_PYTHON_INSTALL_DIR="$TOOL_ROOT/python"
 export UV_CACHE_DIR="$TOOL_ROOT/cache/uv"
 export PLAYWRIGHT_BROWSERS_PATH="$TOOL_ROOT/cache/playwright"
+export DENO_NO_UPDATE_CHECK=1
 export PATH="$VENV/bin:$TOOL_ROOT/node/bin:$TOOL_ROOT/pi/node_modules/.bin:$TOOL_ROOT/bin:$PATH"
 
 cd "$PROJECT_ROOT"

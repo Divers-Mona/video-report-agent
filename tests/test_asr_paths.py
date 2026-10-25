@@ -150,7 +150,9 @@ def test_setup_script_runs_cache_preparation_from_project_root_outside_cwd(tmp_p
         path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
         path.chmod(0o755)
 
-    stub(tool_root / "bin" / "uv", 'printf "uv cwd=%s\\n" "$PWD" >> "$SMOKE_LOG"')
+    stub(tool_root / "bin" / "uv", 'printf "uv cwd=%s args=%s\\n" "$PWD" "$*" >> "$SMOKE_LOG"')
+    stub(project / "scripts" / "install-deno.sh",
+         'printf "deno cwd=%s\\n" "$PWD" >> "$SMOKE_LOG"')
     stub(tool_root / "node" / "bin" / "node")
     stub(tool_root / "node" / "bin" / "npm", 'printf "npm cwd=%s\\n" "$PWD" >> "$SMOKE_LOG"')
     stub(tool_root / "bin" / "ffmpeg")
@@ -169,4 +171,8 @@ def test_setup_script_runs_cache_preparation_from_project_root_outside_cwd(tmp_p
     assert result.returncode == 0, result.stderr
     cache_script = project / "scripts" / "cache_faster_whisper_model.py"
     expected = f"python cwd={project} script={cache_script}"
-    assert expected in log.read_text(encoding="utf-8")
+    calls = log.read_text(encoding="utf-8")
+    assert expected in calls
+    assert f"deno cwd={project}" in calls
+    assert "--locked --inexact --extra local-asr" in calls
+    assert calls.index("uv cwd=") < calls.index("deno cwd=") < calls.index("npm cwd=")

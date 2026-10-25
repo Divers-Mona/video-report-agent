@@ -144,7 +144,9 @@ ASR_MODEL=paraformer-v2
 DASHSCOPE_API_KEY=your-dashscope-api-key
 ```
 
-For local CPU transcription, use faster-whisper. Install it with `uv sync --extra local-asr`, or follow the [WSL setup guide](docs/local-wsl.md) when using the WSL launcher. Chinese and English use the same multilingual model:
+For local CPU transcription, use faster-whisper. Install it with `uv sync --extra local-asr`, or follow the [WSL setup guide](docs/local-wsl.md) when using the WSL launcher. Chinese and English use the same multilingual model.
+
+YouTube downloads require Deno (at least 2.3.0) and the EJS solver scripts. WSL setup explicitly installs Deno 2.9.8 into `.tooling/wsl/bin`, verifies the official SHA-256 checksum, and installs the locked yt-dlp 2026.10.21 / EJS 0.8.0 pair. Existing environments can follow the [YouTube dependency update steps](docs/local-wsl.md#youtube-javascript-依赖). Solver scripts are installed ahead of time, without enabling runtime remote components.
 
 ```dotenv
 ASR_BACKEND=faster-whisper
