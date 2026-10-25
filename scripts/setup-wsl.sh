@@ -12,6 +12,7 @@ export UV_PROJECT_ENVIRONMENT="$VENV"
 export UV_PYTHON_INSTALL_DIR="$TOOL_ROOT/python"
 export UV_CACHE_DIR="$TOOL_ROOT/cache/uv"
 export PLAYWRIGHT_BROWSERS_PATH="$TOOL_ROOT/cache/playwright"
+export DENO_NO_UPDATE_CHECK=1
 export PATH="$VENV/bin:$TOOL_ROOT/node/bin:$TOOL_ROOT/pi/node_modules/.bin:$TOOL_ROOT/bin:$PATH"
 
 cd "$PROJECT_ROOT"
@@ -30,7 +31,8 @@ EXTRAS=(--extra local-asr)
 if [[ "${VIDEO_REPORT_WITH_ENHANCEMENT:-0}" == "1" ]]; then
   EXTRAS+=(--extra enhancement)
 fi
-"$UV" sync --project "$PROJECT_ROOT" --locked "${EXTRAS[@]}"
+"$UV" sync --project "$PROJECT_ROOT" --locked --inexact "${EXTRAS[@]}"
+bash "$PROJECT_ROOT/scripts/install-deno.sh"
 npm install --prefix "$TOOL_ROOT/pi" --no-save --no-package-lock --no-audit --no-fund \
   --cache "$TOOL_ROOT/cache/npm" '@earendil-works/pi-coding-agent@0.85.0'
 "$UV" run --project "$PROJECT_ROOT" --locked "${EXTRAS[@]}" playwright install chromium

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import wave
+from importlib.metadata import requires as package_requires
 from pathlib import Path
 
 from .asr import DEFAULT_FASTER_WHISPER_MODEL
@@ -50,6 +52,39 @@ def _playwright_check() -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Chromium could not start ({type(exc).__name__})"
     return True, "headless Chromium started and closed"
+
+
+def _deno_check() -> tuple[bool, str]:
+    ok, detail = _tool_check("deno")
+    match = re.match(r"deno (\d+)\.(\d+)\.(\d+)(?:\s|$)", detail) if ok else None
+    if not match or tuple(map(int, match.groups())) < (2, 3, 0):
+        return False, f"{detail}; Deno >=2.3.0 required; run scripts/install-deno.sh"
+    return True, detail
+
+
+def _ejs_check() -> tuple[bool, str]:
+    try:
+        import yt_dlp_ejs
+        from yt_dlp_ejs.yt import solver
+
+        expected = next(
+            (item.split(";", 1)[0].removeprefix("yt-dlp-ejs==")
+             for item in package_requires("yt-dlp") or () if item.startswith("yt-dlp-ejs==")),
+            None,
+        )
+        if expected is None or yt_dlp_ejs.version != expected:
+            return False, (
+                f"EJS {yt_dlp_ejs.version}; yt-dlp requires {expected or 'an unknown version'}; "
+                "sync the locked project dependencies"
+            )
+        if not solver.core().strip() or not solver.lib().strip():
+            return False, "EJS solver bundles are empty; sync the locked project dependencies"
+    except Exception as exc:
+        return False, (
+            f"EJS package/bundles unavailable ({type(exc).__name__}); "
+            "sync the locked project dependencies"
+        )
+    return True, f"EJS {yt_dlp_ejs.version}; matching local core/lib bundles are available"
 
 
 def _asr_model_ready(model: str, cache_root: Path) -> bool:
@@ -128,6 +163,8 @@ def run_doctor() -> list[tuple[str, bool | None, str]]:
     for name in ("uv", "node", "npm", "pi", "yt-dlp"):
         ok, detail = _tool_check(name)
         rows.append((name, ok, detail))
+    rows.append(("YouTube Deno runtime", *_deno_check()))
+    rows.append(("YouTube EJS scripts", *_ejs_check()))
     for name in ("ffmpeg", "ffprobe"):
         ok, detail = _tool_check(name, ("-version",))
         rows.append((name, ok, detail))
