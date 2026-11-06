@@ -51,7 +51,7 @@ def resolve_media_config(
     require_credentials=True,
 ):
     backend = asr_backend or os.getenv("ASR_BACKEND") or "mlx"
-    if backend not in {"mlx", "paraformer", "faster-whisper"}:
+    if backend not in {"mlx", "paraformer", "faster-whisper", "whisper-cpp"}:
         raise ValueError(f"Unknown ASR_BACKEND: {backend}")
     if backend == "paraformer":
         from .paraformer import ParaformerBackend
@@ -59,6 +59,10 @@ def resolve_media_config(
         default = ParaformerBackend.default_model
     elif backend == "faster-whisper":
         default = FasterWhisperBackend.default_model
+    elif backend == "whisper-cpp":
+        from .whisper_cpp import WhisperCppBackend
+
+        default = WhisperCppBackend.default_model
     else:
         default = MlxWhisperBackend.default_model
     model = asr_model or os.getenv("ASR_MODEL") or default
@@ -68,6 +72,11 @@ def resolve_media_config(
         raise ValueError("mlx backend requires a Whisper repository or local model directory")
     if backend == "faster-whisper" and not model.strip():
         raise ValueError("faster-whisper requires a model ID or local model directory")
+    whisper_parameters = None
+    if backend == "whisper-cpp":
+        from .whisper_cpp import resolve_whisper_cpp_config
+
+        whisper_parameters = resolve_whisper_cpp_config(model, require_files=require_credentials)
     ocr = ocr_backend or os.getenv("OCR_BACKEND") or "rapidocr"
     if ocr != "rapidocr":
         raise ValueError(f"Unknown OCR_BACKEND: {ocr}")
@@ -91,6 +100,7 @@ def resolve_media_config(
         "asr_model": model,
         "asr_language": asr_language or os.getenv("ASR_LANGUAGE") or "zh",
         "asr_parameters": (
+            whisper_parameters if backend == "whisper-cpp" else
             {"device": "cpu", "compute_type": "int8", "vad_filter": _vad_filter()}
             if backend == "faster-whisper"
             else cloud_asr_parameters(model) if backend == "paraformer" else {}

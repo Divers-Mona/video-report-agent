@@ -12,7 +12,8 @@
 | [local_models.py](../src/video_report_agent/local_models.py)、[doctor.py](../src/video_report_agent/doctor.py) | OpenAI 兼容本地模型发现/选择、Pi local provider 合并、非推理依赖检查 |
 | [pipeline.py](../src/video_report_agent/pipeline.py) | 创建输入和状态，顺序组织下载、转写、生成、截图与错误落盘 |
 | [ingest.py](../src/video_report_agent/ingest.py)、[audio.py](../src/video_report_agent/audio.py) | Bilibili / YouTube 来源验证、所选分 P 元数据预查询、下载、16 kHz 单声道音频、时长与静音检测 |
-| [asr.py](../src/video_report_agent/asr.py)、[paraformer.py](../src/video_report_agent/paraformer.py) | MLX/faster-whisper 本地 ASR 与云端 ASR、云任务轮询、两段结果与时间戳合并 |
+| [download_worker.py](../src/video_report_agent/download_worker.py)、[bilibili_ytdlp.py](../src/video_report_agent/bilibili_ytdlp.py) | 项目 yt-dlp 入口、Bilibili 缺失页面状态的签名详情兼容、平台备用媒体地址选择 |
+| [asr.py](../src/video_report_agent/asr.py)、[whisper_cpp.py](../src/video_report_agent/whisper_cpp.py)、[paraformer.py](../src/video_report_agent/paraformer.py) | MLX/faster-whisper/whisper.cpp 本地 ASR 与云端 ASR、云任务轮询、两段结果与时间戳合并 |
 | [transcript.py](../src/video_report_agent/transcript.py)、[transcript_foundation.py](../src/video_report_agent/transcript_foundation.py) | 来源事件、规范单元、可选字幕/OCR 融合 |
 | [pi.py](../src/video_report_agent/pi.py)、[产品 Skill](../src/video_report_agent/skills/video-report/SKILL.md) | 选择模式资产、Pi RPC 和完成判断；Skill 规定内容与表达 |
 | [report_content.py](../src/video_report_agent/report_content.py)、[report_image.py](../src/video_report_agent/report_image.py) | 原始简介处理、HTML 后处理与长图导出 |
@@ -25,6 +26,8 @@
 
 下载由 `ingest.py` 监督 `download_worker.py` 中的 yt-dlp，最多两次尝试、合计 120 秒运行预算，随后做有限进程清理。每 30 秒检查进度：最近 10 秒无进展，或未到 90% 且 ETA 不在 30 秒以内时，首轮中断并重新解析，优先选择平台返回的不同备用 URL；无备用则使用新解析的主 URL。第二轮不再增加重试。保持断点续传和外层 Worker 进程组，关闭 yt-dlp 内部额外重试，网络等待上限 10 秒。`download.log` 持续保留进度与切换原因，不打印签名媒体 URL。120 秒是体验预算，不是所有视频都能在此范围内完成的保证。
 
+Bilibili 元数据预查询也使用项目 yt-dlp Worker。页面没有 `__INITIAL_STATE__` 时，局部兼容补丁读取平台签名详情接口并校验视频身份和分 P 数据，再交给原 yt-dlp 提取器处理格式、字幕及访问限制；已有页面状态保持原处理，明确的风控挑战不进入详情回退。补丁随 Python 包发布，不依赖临时源码目录或运行时下载代码；来源及升级条件见 [B 站解析兼容](local-wsl.md#b-站页面解析兼容)。
+
 ## 任务数据与接口
 
 Bilibili 默认 Web/CLI 用 `auto` 依次尝试作者字幕轨、`ai-zh`、ASR，任一字幕正文可用即结束采集。Local 可主动使用自选来源。自选文字稿入口接收有序的 `transcript_sources`：ASR、非 AI 字幕轨、B站 `ai-zh`。第一路可用来源提供时间轴，其余已选来源参与局部校对；未选 ASR 时跳过媒体下载、音频提取与 ASR。字幕获取、来源状态、缓存及对照命令见 [可选文字稿来源](subtitle-sources.md)。YouTube 的 auto 模式直接选择 ASR，显式选源仅支持 ASR。`transcribe` 在 `TRANSCRIPT_READY` 结束，不启动后续 Agent/报告阶段；旧显式 ASR-only/fused 调用保持兼容。
@@ -34,6 +37,8 @@ Bilibili 默认 Web/CLI 用 `auto` 依次尝试作者字幕轨、`ai-zh`、ASR�
 视频、任务、ASR/cloud task、来源事件、规范单元、转写正文、报告 HTML、缓存和结构化统计入库。`input.json`、`status.json`、转写和 HTML 是可重建执行导出；媒体、PNG、资源、Pi 会话/配置快照和原始诊断仍存文件。SQL 缓存区分下载、ASR 和完整转写，认领记录生产 run、执行 ID 与 deadline；READY 正文原子保存，活跃生产者不能被接管，退出后释放未完成占用，旧 ID 不得覆盖后续生产者。终态媒体默认七天后清理（`MEDIA_KEEP_LAST=0`、`MEDIA_MAX_AGE_DAYS=7`），转写文本保留，同步产物可用状态，不使 READY 转写或 HTML 失效。
 
 ASR 片段编号保留原始来源位置，过滤空白或无效片段后允许间断；复用检查要求编号严格递增，不要求从零连续编号。
+
+`whisper-cpp` 通过子进程执行本地 HIP `whisper-cli`，继承受监督 Worker 的进程组。适配器验证 GPU 初始化日志，将 JSON `offsets`（毫秒）转换为共享规范片段，并保留原始输出及日志。可执行文件和权重的路径、大小、修改时间纳入持久运行参数与缓存身份，推理前核对其未变；安装构建与模型下载为显式准备步骤。具体参数及部署入口见 [HIP 转写](local-wsl.md#amd-gpu-转写hip)。
 
 规范单元具有 ID、时间范围与来源关系，`transcript.md` 为模型可读视图；报告的 `data-source-units` 用来定位来源，不能单凭绑定合法判断内容忠实。
 

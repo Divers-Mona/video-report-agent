@@ -53,11 +53,50 @@ bash scripts/run-wsl.sh doctor
 
 YouTube 元数据检查可使用 `PATH="$PWD/.tooling/wsl/bin:$PATH" .venv-wsl/bin/yt-dlp -v --ignore-config --skip-download --no-playlist --list-formats "https://www.youtube.com/watch?v=jNQXAC9IVRw"`，确认日志识别到 Deno、EJS 并列出音频格式；该命令不下载媒体。
 
+### B 站页面解析兼容
+
+项目保持 `yt-dlp==2026.10.21` 与 EJS 的锁定配对，并在项目 Worker 内安装局部 Bilibili 兼容补丁。网页省略 `__INITIAL_STATE__` 时，补丁使用 yt-dlp 已有的 WBI 签名能力读取平台详情接口，校验视频身份及分 P 数据后沿用原格式、字幕和权限处理。明确的页面风控挑战仍失败；接口拒绝、登录、会员及地区限制不会被忽略。元数据预查询与正式下载使用相同入口，不需要浏览器 Cookie、临时 `PYTHONPATH` 或另装 fork。
+
+实现参考 [yt-dlp PR #17898](https://github.com/yt-dlp/yt-dlp/pull/17898) 的详情回退思路（Unlicense，参考修订 `e88263195a928487cd1802f1a626931f738db5e3`）。2026-10-27 核对时该 PR 尚未合并，官方 2026.10.26 仍有相同缺失状态报错，故没有仅为此问题升级依赖。将来升级 yt-dlp 时，应先验证缺失页面状态、正常页面、指定分 P 与访问错误，再移除已由上游覆盖的兼容补丁。直接运行环境内的 `yt-dlp` 不会加载项目补丁；通过 `video-report.cmd`、`scripts/run-wsl.sh` 或项目 `probe_bilibili_video` 使用该修复。
+
+2026-10-27 使用 `BV1MrnR6xEus`（1741.264 秒）核验了项目元数据预查询、真实下载及 `video-report.cmd transcribe` 到 `TRANSCRIPT_READY` 的 HIP 转写，生成 858 个片段。首次下载因线路较慢达到原有 120 秒预算；保留分片经项目下载入口续传并验证完整后，最终 CLI 复用已完成媒体，重新执行 ASR。此次验证未使用临时 fork、`PYTHONPATH` 或修改下载预算，因此不证明该线路下从零下载能在 120 秒内完成。首次运行以 `FAILED` 结束；音频已删除，验证临时材料仍待清理，文字稿保留。
+
 ## 配置与选择模型
 
 `.env.local.example` 设置 `PI_PROVIDER=local` 和一个 OpenAI 兼容 API 基址。当前本机 `.env` 使用 `http://127.0.0.1:8080/v1`，模型 ID 留空；生成时会重新读取 `/models`，只有一个 ID 时自动选择。若返回多个 ID，命令会列出选项并要求通过 `.env` 的 `PI_MODEL` 或本次 `--model` 明确选择。显式模型不需要先发现列表。`video-report models` 只读取并列出 `/models`，不发送对话请求。
 
 服务地址、模型 ID、上下文窗口、输出上限和 reasoning 声明都由 `.env` 控制。当前 `.env` 中的上下文窗口 `131072`、输出上限 `32768` 来自 2026-10-03 对当前服务 `/props` 的只读检查（`default_generation_settings.n_ctx` 和 `params.n_predict`）；切换服务或模型后应按服务实际值手动更新，不会根据模型名称推断。`PI_API_KEY=local` 是当前无认证服务使用的占位值；需要认证时替换为服务密钥。Pi 的 `models.json` 仅更新 `local` provider，API key 保持 `$PI_API_KEY` 环境引用，现有其他 provider 与 `auth.json` 保留。生成的 `runs/<run-id>/input.json` 记录已解析的 provider/model，不记录 API key。
+
+## AMD GPU 转写（HIP）
+
+`whisper-cpp` 使用 WSL 内的 ROCm/HIP 和本地 ggml 权重。需要已有可用的 AMD WSL 驱动、ROCm、`git`、CMake、Make 与 C/C++ 编译工具；`rocminfo` 应列出目标 GPU。安装脚本不安装系统驱动、不使用 Windows 原生 TheRock，也不需要报告模型服务。
+
+在 WSL 的项目根目录执行：
+
+```sh
+# 默认编译 RX 7900 XTX 的 gfx1100；其他 GPU 按实际架构设置 AMDGPU_TARGETS。
+bash scripts/setup-whisper-cpp-hip.sh
+bash scripts/run-wsl.sh transcribe 'https://www.youtube.com/watch?v=VIDEO_ID' \
+  --asr-backend whisper-cpp --asr-model large-v3-turbo --asr-language zh
+```
+
+Windows 可使用相同参数：
+
+```powershell
+.\video-report.cmd transcribe "https://www.youtube.com/watch?v=VIDEO_ID" --asr-backend whisper-cpp --asr-model large-v3-turbo --asr-language zh
+```
+
+安装固定 [whisper.cpp v1.9.5](https://github.com/ggml-org/whisper.cpp/tree/v1.9.5)（MIT）源码到 `.tooling/wsl/whisper.cpp`，默认 `BUILD_JOBS=4`，通过 `GGML_HIP=ON` 编译 `whisper-cli`；WSL 构建关闭 HIP VMM，使用常规 HIP 内存分配。`ROCM_PATH` 可选择 ROCm 根目录（默认 `/opt/rocm`）。large-v3-turbo 权重约 1.6 GB，来自官方项目引用的 [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)，固定仓库修订，下载到临时文件后才替换目标。已有源码修订不符或被修改时，脚本报错并保留原内容。
+
+`large-v3-turbo` 对应 `models/whisper-cpp/ggml-large-v3-turbo.bin`。其他模型需预先准备兼容的 ggml 文件，并通过 `--asr-model /绝对路径/ggml-model.bin` 选择；相对路径按项目根目录解析。`WHISPER_CPP_BINARY` 可指定其他兼容 HIP `whisper-cli`，相对路径同样按项目根目录解析。运行阶段不下载权重；仍会读取 `ASR_MODEL`，因此临时切换后端时应显式传 `--asr-model`，避免沿用 CPU 后端的 `small`。
+
+后端启用 GPU 0 和 Flash Attention，要求日志确认 `ROCm0` GPU 后端初始化，CPU 回退会报错。原始诊断保存在每次运行目录的 `whisper-cpp.log`；`asr.json` 保留解析结果与规范片段，时间戳相对完整音频。`transcribe` 成功后状态为 `TRANSCRIPT_READY`，可读取 `transcript.md`，不调用报告模型。现有 30 分钟任务期限与取消机制同时终止 HIP 子进程；直接调用底层 Python ASR 接口时，由调用方负责其运行期限。
+
+whisper.cpp turbo 偶尔在段正文中输出不完整 UTF-8 字节（[上游问题 #3760](https://github.com/ggml-org/whisper.cpp/issues/3760)）。适配器只在段 `text` 内将非法字节序列替换成可见的 `�`，不猜测缺失文字；`asr.json` 的 `raw_result.utf8_repairs` 记录原始段号、时间范围、正文字符位置、原始 JSON 字节范围及十六进制字节。位置从零开始，范围末端不包含在内。完整原始输出另存 `whisper-cpp.raw.json`，解析失败时也保留；`raw_result` 为解析后的内容，已处理的正文包含同样的 `�` 标记。发生替换时，原始字节还以 `raw_output_base64` 嵌入 ASR 文档，随 ASR 和完整转写缓存持久保存；复用时恢复同名 raw 文件，不依赖生产运行目录仍然存在。取消清理保留已完成 ASR 对应的 raw 文件与日志。未发生替换时不嵌入原始字节，raw 文件仅作原运行目录的诊断材料。字段名、元数据、JSON 结构或不成对 Unicode 转义损坏仍报错。
+
+可执行文件与权重的路径、大小和修改时间保存在运行参数中，并进入 ASR/文字稿缓存身份；创建任务后文件变化时，推理会报错，需重新创建任务。模型应保存在不可变路径，不要在保留大小及修改时间的情况下原地替换内容。修改二进制依赖库或 ROCm 版本后需重建 CLI，避免沿用旧缓存身份。`doctor` 只检查本地文件，不证明 GPU 推理可用。
+
+本地已验证 Ubuntu-26.04 WSL、ROCm 10.1、RX 7900 XTX（gfx1100）与上述固定 whisper.cpp/turbo 模型的真实 GPU 转写，并核对 GPU 权重分配和时间戳；缓存复用及异常字节保留由相关回归测试覆盖。这不是 Windows 原生 HIP 验证。文字稿仍为机器识别，专名和交易术语需按用途校对。六条 YouTube 验证记录位于忽略的 `.local/evals/hip-transcripts-20261026/`，音频已按保留要求删除，转写与诊断记录继续保留。
 
 ## 日常命令
 
@@ -114,7 +153,7 @@ faster-whisper 默认启用 VAD（`ASR_VAD_FILTER=true`），过滤无语音片�
 
 上限在建任务时保存到 `input.json.media_limits`。磁盘统计不跟随符号链接，硬链接按文件身份去重；默认的 `.tooling` 模型缓存位于运行根目录之外，不计入。下载前使用时长、可用空间和已知文件大小限制；下载中约每秒检查一次实际文件及运行目录用量，转换音频前预估 PCM 空间，转换后再次检查。它是应用层检查，下载缓冲或转换估算偏差可能暂时超过阈值，不是操作系统硬配额。小型状态／诊断记录仍会写入，已完成的转写可直接复用。
 
-终态失败仍为 `FAILED`，用 `error_category` 区分 `INPUT_REJECTED`、`DOWNLOAD_FAILED`、`MODEL_MISSING`、`TRANSCRIPTION_FAILED`；`error_code` 给出具体原因。下载错误只根据 yt-dlp 输出识别登录、付费／会员、地区限制和平台风控／人机验证。B站 `Unable to extract initial state` 记录为可能的风控／验证相关页面解析失败；无法识别的输出保留为一般下载失败，不额外请求页面探测。
+终态失败仍为 `FAILED`，用 `error_category` 区分 `INPUT_REJECTED`、`DOWNLOAD_FAILED`、`MODEL_MISSING`、`TRANSCRIPTION_FAILED`；`error_code` 给出具体原因。下载错误只根据 yt-dlp 输出识别登录、付费／会员、地区限制和平台风控／人机验证。B站缺少页面状态先按上述兼容路径处理；仍出现 `Unable to extract initial state` 时记录为可能的风控／验证相关页面解析失败。无法识别的输出保留为一般下载失败，不在失败分类时额外请求页面探测。
 
 解决原因后重新运行命令即可重试，完整音频及兼容的 ASR／转写结果会复用。资源超限不会自动删除已有文件或改变七天媒体留存、转写文本保留策略；调整上限对新任务生效。
 

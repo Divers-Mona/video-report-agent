@@ -32,7 +32,9 @@ def main():
         run.add_argument("--ocr-mode", choices=["off", "auto", "roi", "on"], default="off")
         run.add_argument("--ocr-roi")
         run.add_argument("--subtitle-file", type=Path)
-        run.add_argument("--asr-backend", choices=["mlx", "paraformer", "faster-whisper"])
+        run.add_argument(
+            "--asr-backend", choices=["mlx", "paraformer", "faster-whisper", "whisper-cpp"]
+        )
         run.add_argument("--asr-model")
         run.add_argument("--asr-language")
         run.add_argument("--ocr-backend", choices=["rapidocr"])

@@ -28,7 +28,7 @@ class AsrError(RuntimeError):
 
 
 class AsrModelMissingError(AsrError):
-    """The requested faster-whisper model is unavailable in the local cache."""
+    """A required local ASR model or executable is unavailable."""
 
 
 @dataclass(frozen=True)
@@ -318,6 +318,12 @@ def transcribe_audio(
     if backend == "faster-whisper":
         return FasterWhisperBackend(model).transcribe(
             audio_path, language, vad_filter=(parameters or {}).get("vad_filter", True)
+        )
+    if backend == "whisper-cpp":
+        from .whisper_cpp import WhisperCppBackend
+
+        return WhisperCppBackend(model, parameters=parameters, task_path=task_path).transcribe(
+            audio_path, language
         )
     if backend == "paraformer":
         from .paraformer import ParaformerBackend

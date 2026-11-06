@@ -143,6 +143,9 @@ def cleanup_cancelled_run(run: Path, *, database_path=None) -> None:
     elif metadata and validated_asr(run, metadata) is not None:
         keep.add("asr.json")
 
+    if "asr.json" in keep and metadata.get("asr_backend") == "whisper-cpp":
+        keep.update({"whisper-cpp.raw.json", "whisper-cpp.log"})
+
     if "download" in keep:
         keep.add("audio.wav")
 

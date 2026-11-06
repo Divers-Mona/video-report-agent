@@ -162,6 +162,9 @@ def reuse_asr(run: Path, metadata: dict, *, database_path=None):
     payload = json.loads(row["payload_json"])
     if not valid_asr_payload(payload["asr"]):
         return None
+    from .whisper_cpp import restore_whisper_cpp_raw_output
+
+    restore_whisper_cpp_raw_output(run, payload["asr"])
     (run / "asr.json").write_text(encode(payload["asr"]))
     store.document(run.name, "asr.json", encode(payload["asr"]))
     store.use_cache(run.name, "asr", key, row["producer_run"])
@@ -273,6 +276,10 @@ def reuse_transcript(run: Path, metadata: dict, *, database_path=None, key=None)
         target = run / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(body)
+        if name == "asr.json":
+            from .whisper_cpp import restore_whisper_cpp_raw_output
+
+            restore_whisper_cpp_raw_output(run, json.loads(body))
     metadata.update(
         {
             key: payload["metadata"][key]
