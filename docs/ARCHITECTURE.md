@@ -15,7 +15,7 @@
 | [download_worker.py](../src/video_report_agent/download_worker.py)、[bilibili_ytdlp.py](../src/video_report_agent/bilibili_ytdlp.py) | 项目 yt-dlp 入口、Bilibili 缺失页面状态的签名详情兼容、平台备用媒体地址选择 |
 | [asr.py](../src/video_report_agent/asr.py)、[whisper_cpp.py](../src/video_report_agent/whisper_cpp.py)、[paraformer.py](../src/video_report_agent/paraformer.py) | MLX/faster-whisper/whisper.cpp 本地 ASR 与云端 ASR、云任务轮询、两段结果与时间戳合并 |
 | [transcript.py](../src/video_report_agent/transcript.py)、[transcript_foundation.py](../src/video_report_agent/transcript_foundation.py) | 来源事件、规范单元、可选字幕/OCR 融合 |
-| [pi.py](../src/video_report_agent/pi.py)、[产品 Skill](../src/video_report_agent/skills/video-report/SKILL.md) | 选择模式资产、Pi RPC 和完成判断；Skill 规定内容与表达 |
+| [pi.py](../src/video_report_agent/pi.py)、[产品 Skill](../src/video_report_agent/skills/video-report/SKILL.md) | 选择模式资产、Pi RPC 和完成判断；Skill 规定内容与表达。暂存与提示词函数也供本地评测脚本 [cli_agent_report.py](../scripts/cli_agent_report.py) 调用订阅 CLI |
 | [report_content.py](../src/video_report_agent/report_content.py)、[report_image.py](../src/video_report_agent/report_image.py) | 原始简介处理、HTML 后处理与长图导出 |
 | [storage.py](../src/video_report_agent/storage.py) | SQLite 正文、执行身份、缓存认领与结构化事实；支持调用方活动事务 |
 | [reuse.py](../src/video_report_agent/reuse.py)、[retention.py](../src/video_report_agent/retention.py) | 兼容输入复用与媒体清理 |
@@ -80,7 +80,7 @@ Docker 调用方使用 `PI_TASK_RUNS_VOLUME` 和 `PI_TASK_RUNS_ROOT` 选择已�
 
 ## 配置与费用
 
-CLI 从项目 `.env` 加载配置，进程环境优先。`PI_PROVIDER=local` 时，生成开始前解析模型：显式 `PI_MODEL` 或 `--model` 直接使用，空模型配置才 GET `${PI_BASE_URL}/models`；单模型自动选择，多模型要求用户明确选择。`models` 子命令只读取该端点，`doctor` 不发送生成请求。运行输入只保存已选 provider/model；Pi 的 local `models.json` 更新 local provider，其他 provider 与 `auth.json` 保持原样，API key 由环境引用。`PiRunner(skill_dir=...)` / `VIDEO_REPORT_SKILL_DIR` 仍可指定完整 Skill。Windows WSL 入口与隔离路径见 [本地部署说明](local-wsl.md)。
+CLI 从项目 `.env` 加载配置，进程环境优先。`PI_PROVIDER=local` 时，生成开始前解析模型：显式 `PI_MODEL` 或 `--model` 直接使用，空模型配置才 GET `${PI_BASE_URL}/models`；单模型自动选择，多模型要求用户明确选择。`models` 子命令只读取该端点，`doctor` 不发送生成请求。`--provider` 覆盖本次 `PI_PROVIDER` 并忽略 `PI_MODEL`，非 local 必须给 `--model`；`--thinking` 按 Pi 支持的级别校验。运行输入只保存已选 provider/model/thinking（`model_selection`），不进入转写复用的缓存身份；Pi 的 local `models.json` 更新 local provider，其他 provider 与 `auth.json` 保持原样，API key 由环境引用。`PiRunner(skill_dir=...)` / `VIDEO_REPORT_SKILL_DIR` 仍可指定完整 Skill。Windows WSL 入口与隔离路径见 [本地部署说明](local-wsl.md)。
 
 `usage.json` 缓存 LLM 聚合，按日志文件元信息及语义版本失效。ASR backend/时长元数据有进程内有界缓存，费用每次按当前传入费率计算。DeepSeek V4.1 Flash 的 QwenAI 北京价格估算按北京时间 08:00–22:00 忙时、其余时间闲时计算；当前规则依照供应商价目表，不加入日历假日判断。其他可用 Pi 美元估算单列；均为估算，不是实时查询或供应商账单。缺失价格保持未知。
 

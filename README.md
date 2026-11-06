@@ -204,7 +204,7 @@ uv run video-report generate 'https://www.bilibili.com/video/BV...' --report-mod
 uv run video-report generate 'https://www.youtube.com/watch?v=jNQXAC9IVRw' --asr-backend faster-whisper --asr-language en
 ```
 
-换转写模型使用 `--asr-model medium` 或 `--asr-model large-v3`；`--model` 则选择生成报告的大模型，两者不同。faster-whisper 的生成和仅转写都只读取本地缓存，需先显式运行 `scripts/cache_faster_whisper_model.py` 或 `scripts/setup-wsl.sh` 下载权重。更大模型通常需要更多内存和 CPU 时间，本次未测试其耗时或准确率。长期默认值可在 `.env` 中设置 `ASR_MODEL` 和 `ASR_LANGUAGE`。仅需音频转写时使用 `transcribe`；VAD、资源上限和失败重试见 [本地运行说明](docs/local-wsl.md#资源上限与失败重试)。
+换转写模型使用 `--asr-model medium` 或 `--asr-model large-v3`；`--model` 则选择生成报告的大模型，两者不同。`--provider` 与 `--thinking` 可为单次生成改用其他 Pi provider 和推理强度；已完成转写的任务也可用已登录的 Claude Code、Codex 或 OpenCode 生成报告，见[本地运行说明](docs/local-wsl.md#用订阅-cli-生成报告)。faster-whisper 的生成和仅转写都只读取本地缓存，需先显式运行 `scripts/cache_faster_whisper_model.py` 或 `scripts/setup-wsl.sh` 下载权重。更大模型通常需要更多内存和 CPU 时间，本次未测试其耗时或准确率。长期默认值可在 `.env` 中设置 `ASR_MODEL` 和 `ASR_LANGUAGE`。仅需音频转写时使用 `transcribe`；VAD、资源上限和失败重试见 [本地运行说明](docs/local-wsl.md#资源上限与失败重试)。
 
 输出目录为 `runs/<run-id>/`，主要阅读产物是 `report.html` 和 `report.png`；`transcript.md` 可用于来源核对。截图失败时 HTML 仍可完成，查看 `status.json` 的 `image_error`，确认 PNG 是否生成。
 
