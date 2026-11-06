@@ -11,6 +11,8 @@ import yt_dlp
 from yt_dlp.extractor.bilibili import BilibiliBaseIE
 from yt_dlp.utils import Popen
 
+from .bilibili_ytdlp import install_bilibili_details_fallback
+
 
 def select_backup_urls(value: object, *, backup: bool) -> None:
     """Change only returned media URLs, preserving format and request headers."""
@@ -38,6 +40,7 @@ def select_backup_urls(value: object, *, backup: bool) -> None:
 
 def main() -> None:
     backup = sys.argv[1] == "1"
+    install_bilibili_details_fallback()
     original = BilibiliBaseIE.extract_formats
 
     def extract_formats(self, play_info):

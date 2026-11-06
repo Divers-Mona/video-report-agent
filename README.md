@@ -153,7 +153,9 @@ ASR_MODEL=small
 ASR_LANGUAGE=zh
 ```
 
-`--asr-language` 指定本次音频的语言，优先于 `ASR_LANGUAGE`；两者都未设置时默认 `zh`。faster-whisper 和 MLX 适配器支持 `auto`（`--asr-language auto` 或 `.env` 的 `ASR_LANGUAGE=auto`），转写时自动检测语言。此参数控制语音识别语言，不控制报告输出语言。paraformer 仍只接受 `zh`。
+AMD GPU 转写可使用 `whisper-cpp` 后端，在 WSL 内通过 ROCm/HIP 运行 whisper.cpp。先按 [HIP 安装说明](docs/local-wsl.md#amd-gpu-转写hip)准备可执行文件和 ggml 权重，再使用 `--asr-backend whisper-cpp --asr-model large-v3-turbo`。安装不会自动更改 `.env`。
+
+`--asr-language` 指定本次音频的语言，优先于 `ASR_LANGUAGE`；两者都未设置时默认 `zh`。faster-whisper、MLX 和 whisper.cpp 适配器支持 `auto`（`--asr-language auto` 或 `.env` 的 `ASR_LANGUAGE=auto`），转写时自动检测语言。此参数控制语音识别语言，不控制报告输出语言。paraformer 仍只接受 `zh`。
 
 Apple Silicon 本地转写替换为：
 
@@ -162,7 +164,7 @@ ASR_BACKEND=mlx
 ASR_MODEL=mlx-community/whisper-large-v3-turbo
 ```
 
-流水线内置 `mlx`、可选 CPU/int8 `faster-whisper` 与 `paraformer` 后端，云端还支持代码已适配的 Fun-ASR 文件转写模型。其他 ASR 可用于独立 Skill 流程；接入本流水线需要对应适配器。云端 ASR 会上传音频，报告模型会接收生成所需的转写内容。
+流水线内置 `mlx`、可选 CPU/int8 `faster-whisper`、HIP GPU `whisper-cpp` 与 `paraformer` 后端，云端还支持代码已适配的 Fun-ASR 文件转写模型。其他 ASR 可用于独立 Skill 流程；接入本流水线需要对应适配器。云端 ASR 会上传音频，报告模型会接收生成所需的转写内容。
 
 ### 生成与查看
 

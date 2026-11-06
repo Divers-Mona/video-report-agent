@@ -172,4 +172,14 @@ def run_doctor() -> list[tuple[str, bool | None, str]]:
     rows.append(("Local model discovery", *_model_check()))
     rows.append(("faster-whisper audio decoder", *_asr_decoder_check()))
     rows.append(("faster-whisper weights", *_asr_check()))
+    backend = (os.getenv("ASR_BACKEND") or "mlx").strip()
+    if backend == "whisper-cpp":
+        from .asr import AsrError
+        from .whisper_cpp import DEFAULT_MODEL, resolve_whisper_cpp_config
+
+        try:
+            config = resolve_whisper_cpp_config(os.getenv("ASR_MODEL") or DEFAULT_MODEL)
+            rows.append(("whisper.cpp files", True, config["executable"]))
+        except (AsrError, ValueError, OSError) as exc:
+            rows.append(("whisper.cpp files", False, str(exc)))
     return rows

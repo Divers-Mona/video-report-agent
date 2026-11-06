@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ def test_probe_selected_part_without_download(monkeypatch, duration):
     monkeypatch.setattr("video_report_agent.ingest.shutil.which", lambda _: "/bin/yt-dlp")
 
     def runner(command, **kwargs):
+        assert command[:4] == [sys.executable, "-m", "video_report_agent.download_worker", "0"]
         assert command[-1] == "https://www.bilibili.com/video/BV1aTtb6uE7d/?p=2"
         assert "--no-playlist" in command and "--skip-download" in command
         assert "--dump-single-json" in command and "--write-info-json" not in command

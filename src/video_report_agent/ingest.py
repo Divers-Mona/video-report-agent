@@ -285,7 +285,8 @@ def probe_bilibili_video(
     if executable is None:
         raise UrlIngestError("VIDEO_METADATA_UNAVAILABLE", "视频时长查询暂不可用。")
     command = [
-        executable, "--ignore-config", "--no-playlist", "--skip-download",
+        sys.executable, "-m", "video_report_agent.download_worker", "0",
+        "--ignore-config", "--no-playlist", "--skip-download",
         "--dump-single-json", "--socket-timeout", "15", "--retries", "0",
         source.canonical_url,
     ]
@@ -526,7 +527,8 @@ def _download_failure(source: VideoSource, error: str) -> UrlIngestError:
             "可能需要完成平台风控或人机验证，请稍后重试。",
         )
     if any(token in text for token in (
-        "not a bot", "captcha", "geetest", "riskhit", "risk-captcha-sdk", "人机验证", "风控",
+        "not a bot", "captcha", "geetest", "riskhit", "risk-captcha-sdk",
+        "exceeded the rate limit", "人机验证", "风控",
     )):
         return UrlIngestError("DOWNLOAD_PLATFORM_BLOCKED", f"{platform} 要求风控或人机验证。")
     if source.platform == "bilibili" and "unable to extract initial state" in text:
@@ -548,7 +550,8 @@ def _download_failure(source: VideoSource, error: str) -> UrlIngestError:
     )):
         return UrlIngestError("DOWNLOAD_GEO_RESTRICTED", f"{platform} 视频受地区限制。")
     if any(token in text for token in (
-        "sign in", "login required", "log in", "requires authentication", "需要登录",
+        "sign in", "login required", "log in", "requires authentication",
+        "only available for registered users", "需要登录",
     )):
         return UrlIngestError("DOWNLOAD_LOGIN_REQUIRED", f"{platform} 视频需要登录后访问。")
     return UrlIngestError("DOWNLOAD_ERROR", f"{platform} 视频下载失败，请稍后重试。")

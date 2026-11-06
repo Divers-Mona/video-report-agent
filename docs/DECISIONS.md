@@ -1,5 +1,13 @@
 # Core 重要设计决策
 
+## 2026-10-27：在项目 yt-dlp 入口兼容 Bilibili 缺失页面状态
+
+Bilibili 公开页面可能省略初始视频数据，锁定的 yt-dlp 会取得签名详情后仍报解析失败。项目在独立 Worker 内增加局部兼容，将已校验的官方详情数据交回原提取器，元数据预查询与下载共用该入口；参考上游 [PR #17898](https://github.com/yt-dlp/yt-dlp/pull/17898)。选择此方式以保留现有 yt-dlp/EJS 配对、格式处理和进程监督，不将尚未合并的 fork 作为项目依赖。代价是升级上游时须核对并移除已覆盖的兼容补丁。原有下载预算、重试次数与访问限制保持，具体行为见 [B 站解析兼容](local-wsl.md#b-站页面解析兼容)。
+
+## 2026-10-26：可选 whisper.cpp HIP 转写后端
+
+为 AMD GPU 提供 `whisper-cpp`，通过 WSL 原生 HIP CLI 适配已有 ASR 片段与仅转写入口。保留默认 CPU 后端；GPU 转写由调用参数或配置显式选择。使用本地 CLI 子进程便于复用 Linux 进程组取消与期限监督，也沿用现有转写缓存，避免引入另一套流水线。安装和模型下载为显式准备步骤，运行不临时下载；GPU 初始化未确认时失败。代价是需要兼容 ROCm 与 GPU 架构的构建，准备时间及模型识别质量需另行验证。配置与限制见 [HIP 转写](local-wsl.md#amd-gpu-转写hip)。
+
 ## 2026-10-03：Windows 本地运行使用 WSL2 与通用本地模型接口
 
 决定：为 Windows 提供 WSL2 Ubuntu CLI 入口，继续使用上游 Linux 进程监督实现；不把 Windows 原生兼容当作本轮目标。报告模型走 Pi 的 `openai-completions` 兼容 provider，运行前从服务 `/models` 发现模型；单模型可自动选择，多模型需显式选择，配置不绑定某个模型名。新增可选 faster-whisper CPU/int8 ASR，避免争用本机报告模型 GPU。工具、Python 环境、缓存与报告产物均位于项目内，FFmpeg/Chromium 所需系统包留在 WSL。依据：[本地部署说明](local-wsl.md)、[架构](ARCHITECTURE.md)。代价：需要 WSL2 Ubuntu 环境；真实报告模型/内容质量不由无推理检查证明。
