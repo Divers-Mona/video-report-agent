@@ -421,6 +421,29 @@ def test_real_pi_rpc_loads_only_task_credentials(inputs, final):
 
 
 @docker_test
+@pytest.mark.parametrize("auth", ["key_to_key", "runtime_key"])
+def test_real_docker_diagram_model_credentials(inputs, tmp_path, monkeypatch, auth):
+    import test_diagram as diagram_tests
+
+    evidence = {}
+    diagram_tests.test_real_pi_isolated_diagram_and_default_interface(
+        tmp_path, monkeypatch, True, False, auth, isolation="docker", evidence=evidence,
+    )
+    assert evidence["isolation"] == "docker"
+    run = Path(evidence["run"])
+    assert not (run / ".generation-config").exists()
+    scope_filter = f"label=video-report.scope={os.environ['PI_TASK_SCOPE']}"
+    for command in (["docker", "ps", "-aq"], ["docker", "network", "ls", "-q"]):
+        assert not subprocess.check_output(
+            [*command, "--filter", scope_filter], text=True,
+        ).strip()
+    evidence.update(container_cleanup=True, network_cleanup=True, image=IMAGE)
+    (tmp_path / "docker-diagram-evidence.json").write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2) + "\n"
+    )
+
+
+@docker_test
 @pytest.mark.parametrize("outcome", ["timeout", "cancel"])
 def test_execution_waits_for_real_container_cleanup(inputs, monkeypatch, outcome):
     run, config = inputs
@@ -728,3 +751,15 @@ def test_cleaner_handles_late_create_without_deleting_other_resources(cleaner, t
             subprocess.run(['docker', 'rm', '-f', name], capture_output=True)
         for name in (foreign, active):
             subprocess.run(['docker', 'network', 'rm', name], capture_output=True)
+
+
+def test_visual_caption_is_staged_without_raw_images(tmp_path):
+    (tmp_path / "transcript.md").write_text("[u1 | 0–1s] text")
+    (tmp_path / "input.json").write_text('{"visual_enhancement":true}')
+    (tmp_path / "visual/frames").mkdir(parents=True)
+    (tmp_path / "visual/frames/frame-000001.jpg").write_bytes(b"private-image")
+    (tmp_path / "visual/observations.jsonl").write_text('{"frame_id":"frame-000001"}\n')
+    stage = task_container.stage_inputs(tmp_path)
+    assert json.loads((stage / "input.json").read_text())["visual_enhancement"] is True
+    assert (stage / "visual/observations.jsonl").read_text() == '{"frame_id":"frame-000001"}\n'
+    assert not (stage / "visual/frames").exists()

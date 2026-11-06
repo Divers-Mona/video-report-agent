@@ -2,7 +2,8 @@
 
 Local evaluation/generation only: this bypasses Pi, so there is no agent_settled
 completion check and no pi.events.jsonl. Inputs, the staged Skill, the prompt and
-the workspace system prompt are produced by the same functions the Pi path uses.
+the workspace system prompt are produced by the same functions the Pi path uses,
+with independent diagrams, term correction and visual enhancement switched off.
 
     uv run python scripts/cli_agent_report.py <run-dir|run-id> --backend claude \
         --model sonnet --effort low
@@ -56,6 +57,10 @@ DEFAULTS = {
     "codex": ("gpt-6.1-sol", "low"),
     "opencode": ("opencode-go/deepseek-v4.1-flash", "max"),
 }
+# These need Pi extension tools (generate_diagram, lookup_term, ...) or the visual
+# preprocessing output, which the CLIs do not have; stage and prompt as Pi does
+# with them switched off.
+DISABLED_FEATURES = {"diagrams": False, "term_correction": False, "visual_enhancement": False}
 
 
 def child_environment(workspace: Path, extra: dict[str, str]) -> dict[str, str]:
@@ -65,7 +70,9 @@ def child_environment(workspace: Path, extra: dict[str, str]) -> dict[str, str]:
     }
     # OpenCode takes its project directory from PWD, which a parent shell may have
     # set to the repository root; keep it equal to the real working directory.
-    env.update(extra, VIDEO_REPORT_PYTHON=sys.executable, PWD=str(workspace))
+    # The prompt lets the agent run `"$VIDEO_REPORT_PYTHON" -m video_report_agent.inspect_report`;
+    # UTF-8 mode keeps its plain read_text() calls off the Windows ANSI code page.
+    env.update(extra, VIDEO_REPORT_PYTHON=sys.executable, PYTHONUTF8="1", PWD=str(workspace))
     return env
 
 
@@ -240,7 +247,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("run", help="run directory or run ID under runs/")
     parser.add_argument("--backend", choices=BACKENDS, required=True)
-    defaults = "; ".join(f"{name} {model} (effort {effort})" for name, (model, effort) in DEFAULTS.items())
+    defaults = "; ".join(
+        f"{name} {model} (effort {effort})" for name, (model, effort) in DEFAULTS.items()
+    )
     parser.add_argument(
         "--model",
         help=f"CLI model name; OpenCode uses provider/model[#variant]. Defaults: {defaults}",
@@ -272,9 +281,11 @@ def main(argv: list[str] | None = None) -> int:
         f"{started.strftime('%Y%m%d-%H%M%S')}"
     )).resolve()
     out.mkdir(parents=True)
-    workspace = stage_inputs(run_dir, out / "workspace")
+    workspace = stage_inputs(
+        run_dir, out / "workspace", metadata={**metadata, **DISABLED_FEATURES}
+    )
     template_name = stage_report_skill(SKILL.resolve(), workspace, report_mode)
-    prompt = generation_prompt(workspace, report_mode, template_name)
+    prompt = generation_prompt(workspace, report_mode, template_name, **DISABLED_FEATURES)
     command, stdin_text, extra_env = build_command(
         args.backend, executable, model=args.model, effort=args.effort,
         workspace=workspace, prompt=prompt, config_dir=out / "cli-config",

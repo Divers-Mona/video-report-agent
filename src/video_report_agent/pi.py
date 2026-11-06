@@ -12,6 +12,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
+from .diagram import embed_diagram
 from .local_models import configure_local_provider
 from .pi_trace import compact_event
 from .report_content import fill_video_description
@@ -22,6 +23,8 @@ from .task_container import (
     snapshot_models,
     stage_inputs,
 )
+from .term_correction import prepare_term_correction, search_config
+from .visual import REPORT_PROMPT
 
 PROJECT_ROOT = Path.cwd()
 PI_AGENT_DIR = Path(os.getenv("PI_CODING_AGENT_DIR", str(PROJECT_ROOT / "config" / "pi"))).resolve()
@@ -95,25 +98,70 @@ def stage_report_skill(skill_dir: Path, target: Path, report_mode: str) -> str:
     return template_name
 
 
-def generation_prompt(skill: Path, report_mode: str, template_name: str) -> str:
-    """Build the generation prompt for a Skill already staged in ``skill``."""
+def generation_prompt(
+    skill: Path,
+    report_mode: str,
+    template_name: str,
+    *,
+    term_correction: bool,
+    visual_enhancement: bool,
+    diagrams: bool,
+) -> str:
+    """Build the generation prompt (without the review add-on) for a staged Skill."""
     prompt = (
         "读取 transcript.md 和 input.json，按照 video-report skill "
         "生成完整报告，写入 report.html。"
         f"读取 assets/{template_name} 作为本次唯一模板，"
         "原样保留其中的 {{VIDEO_DESCRIPTION}} 占位符一次，"
-        "放在题头之后、正文之前；不要读取、改写或自行生成视频简介，运行时会按原始元数据填充。"
+        "放在题头之后、正文之前；"
+    )
+    prompt += (
+        "本次开启术语修正：读取 source-context.json 与完整原转写，"
+        "按 Skill 在阅读或写作遇到重要疑点时取证并记录，报告归纳读取 transcript.corrected.md。"
+        "可按需调用 lookup_term，优先使用 content 正文，缺失或不足再 fetch_term_source；"
+        "Search 与 Fetch 合计最多三次。"
+        "视频简介仅用于核对术语，不改写或自行生成简介，运行时按原始元数据填充。"
+        if term_correction else
+        "不要读取、改写或自行生成视频简介，运行时会按原始元数据填充。"
     )
     prompt += (
         f"本任务 report_mode={report_mode}，是任务自身保存的不可变输入；"
         "不根据当前配置或视频内容重新选择模式。"
     )
+    if visual_enhancement:
+        prompt += REPORT_PROMPT
     mode_path = skill / "modes" / f"{report_mode}.md"
+    if diagrams:
+        prompt += (
+            "本次启用独立图示：只选一个值得画出的核心点，允许舍弃次要信息；"
+            "优先具体事件或例子中的局部关系，少用需读者猜含义的抽象符号；"
+            "只问一个问题，并列问题只选其一，其余关系留正文；需要很多主体、连线或长篇限定时继续缩小选题。"
+            "最多调用一次 generate_diagram，提供读者要看懂的一个问题、必要局部事实与条件、"
+            "原文来源 ID 和短图名，不预设复杂布局。委派保留原文与正文相同的条件、时态和判断强度，"
+            "不添加推演、未证实等评价，不把强结论改为可能。背景、来源说明、证据分级留在正文，"
+            "不要求图示承载这些内容或免责声明。普通文字或现有组件已能讲清时不画图。"
+            "独立会话按内容自由选择简洁形式与配色，程序负责嵌入；主报告只放置返回的原样标记，"
+            "不读取 diagram.md、report_diagram.ts、绘图代码或会话记录，不自行改图。"
+            "检查预览包含最终图示。"
+        )
     if mode_path.is_file():
         prompt += (
             f"本次只读取 modes/{report_mode}.md 这一份模式文件，不读取另一模式。"
             "Profile 只指导内容关系表达，不覆盖所选模式的展开程度。"
             "只使用当前模式的模板、样式与组件，不读取或混入另一模式的视觉资源。"
+            "本次主报告禁止自由绘图或新写 CSS，只复用模板已有 UI 组件。"
+            "首稿后按 Skill 的集中修订约定，先一次完成全部检查，再最多一次集中修订、"
+            "一次局部复核，随后立即结束，不逐项检查或多次修改。"
+            "直接使用现有 inspect_report；仅有 Bash 时调用 "
+            '"$VIDEO_REPORT_PYTHON" -m video_report_agent.inspect_report，'
+            "复核加 --label revision；不探测浏览器或自行编写截图程序。"
+        )
+    if report_mode == "standard" and mode_path.is_file():
+        prompt += (
+            "布局前读取 modes/standard.md 的选型表和模板结构示例，"
+            "先确认信息关系、必要字段与适用条件，再选择组件；"
+            "缺数据或表达无收益时回到正文。整篇组件节奏与图文重复检查"
+            "合并到既有的一轮集中检查，不按组件数量配额安排布局。"
         )
     return prompt
 
@@ -332,6 +380,12 @@ class PiRunner:
                 generation = stage_inputs(workspace)
                 selections = [{"provider": self.provider, "model": self.model,
                                "api_key": self.api_key}]
+                metadata = json.loads((generation / "input.json").read_text())
+                if metadata.get("diagrams", True) and metadata.get("diagram_model_selection"):
+                    drawing = metadata["diagram_model_selection"]
+                    selections.append({**drawing, "api_key": (
+                        self.api_key if drawing["provider"] == self.provider else None
+                    )})
                 if self.model_recovery:
                     for role in ("alternate", "final_fallback"):
                         if self.model_recovery.get(role):
@@ -374,7 +428,19 @@ class PiRunner:
         env["VIDEO_REPORT_PYTHON"] = sys.executable
         metadata_path = workspace / "input.json"
         metadata = json.loads(metadata_path.read_text()) if metadata_path.is_file() else {}
+        if metadata.get("visual_enhancement") and not (
+            (generation or workspace) / "visual" / "observations.jsonl"
+        ).is_file():
+            raise PiError("IMPLEMENTATION_FAILURE", "画面描述文件缺失")
+        term_correction = metadata.get("term_correction", False)
+        if term_correction:
+            search = search_config(metadata.get("search_provider", "deepseek"),
+                                   metadata.get("search_model", "gpt-6.1-sol"))
+            env["TERM_SEARCH_PROVIDER"] = search["search_provider"]
+            env["OPENAI_SEARCH_MODEL"] = search.get("search_model", "")
+            prepare_term_correction(generation or workspace, metadata)
         report_mode = metadata.get("report_mode", "standard")
+        diagrams = metadata.get("diagrams", True)
         if report_mode not in ("standard", "brief"):
             raise PiError("INPUT_REJECTED", "report_mode must be standard or brief")
         skill = generation or workspace
@@ -389,7 +455,9 @@ class PiRunner:
             "--model",
             self.model,
             "--tools",
-            "read,write,edit,bash,inspect_report" if self.review else "read,write,edit,bash",
+            "read,write,edit,bash" + (",inspect_report" if self.review else "")
+            + (",generate_diagram" if diagrams else "")
+            + (",record_term_review,lookup_term,fetch_term_source" if term_correction else ""),
             "--no-extensions",
             "--no-skills",
             "--skill",
@@ -406,6 +474,14 @@ class PiRunner:
         trace_extension = skill / "request_trace.ts"
         shutil.copy2(Path(__file__).with_name("request_trace.ts"), trace_extension)
         command.extend(["--extension", str(runtime_path / trace_extension.name)])
+        if term_correction:
+            extension = skill / "term_correction.ts"
+            shutil.copy2(Path(__file__).with_name(extension.name), extension)
+            command.extend(["--extension", str(runtime_path / extension.name)])
+        if diagrams:
+            for name in ("report_diagram.ts", "diagram.md"):
+                shutil.copy2(Path(__file__).with_name(name), skill / name)
+            command.extend(["--extension", str(runtime_path / "report_diagram.ts")])
         if self.review:
             extension = skill / "report_inspect.ts"
             shutil.copy2(Path(__file__).with_name("report_inspect.ts"), extension)
@@ -414,7 +490,12 @@ class PiRunner:
             command.extend(["--thinking", self.thinking])
         if self.api_key and generation is None:
             command.extend(["--api-key", self.api_key])
-        prompt = generation_prompt(skill, report_mode, template_name)
+        prompt = generation_prompt(
+            skill, report_mode, template_name,
+            term_correction=term_correction,
+            visual_enhancement=bool(metadata.get("visual_enhancement")),
+            diagrams=diagrams,
+        )
         if self.review:
             prompt += (
                 "本次启用报告检查：写完 report.html 后必须调用 inspect_report。"
@@ -423,7 +504,7 @@ class PiRunner:
                 "确认确实遮挡正文才修复，不为消除告警删除内容或来源绑定。"
                 "允许一次集中局部修订，然后再次调用 inspect_report，之后停止修改并交付。"
                 "首次检查无实际问题则直接交付。最多两次检查，不增加独立评审角色，"
-                "不改原始转写，不调用外部搜索或ASR。检查失败时诚实说明，不能声称检查通过。"
+                "不改原始转写，不为报告检查调用外部搜索或ASR。检查失败时诚实说明，不能声称检查通过。"
                 "若工具没有返回图片，只能声称完成程序检查。"
             )
         logged_command = list(command)
@@ -533,6 +614,10 @@ class PiRunner:
         try:
             if report.is_symlink() or not report.is_file():
                 raise PiError("EXTERNAL_MODEL_FAILURE", "Pi ended without report.html")
+            try:
+                embed_diagram(report, workspace)
+            except (ValueError, OSError) as exc:
+                raise PiError("EXTERNAL_MODEL_FAILURE", "独立图示未正确生成或嵌入。") from exc
             fill_video_description(report, workspace)
             html = report.read_text().lower()
             if "<html" not in html or "</html>" not in html or "<body" not in html:
@@ -608,6 +693,17 @@ class PiRunner:
                 if (
                     event.get("type") == "extension_ui_request"
                     and event.get("method") == "notify"
+                    and event.get("message", "").startswith("video-report-diagram:")
+                ):
+                    drawing = json.loads(event["message"].removeprefix("video-report-diagram:"))
+                    drawing["_trace_received_at"] = event["_trace_received_at"]
+                    drawing["_agent_role"] = "diagram"
+                    if "request_id" in drawing:
+                        drawing["request_id"] = f"diagram-{drawing['request_id']}"
+                    event = drawing
+                if (
+                    event.get("type") == "extension_ui_request"
+                    and event.get("method") == "notify"
                     and event.get("message", "").startswith("video-report-trace:")
                 ):
                     timing = json.loads(event["message"].removeprefix("video-report-trace:"))
@@ -617,6 +713,9 @@ class PiRunner:
                 if compact is not None:
                     log.write((json.dumps(compact, ensure_ascii=False) + "\n").encode())
                     log.flush()
+                if event.get("_agent_role") == "diagram":
+                    # Count and display child usage, but never settle/recover the parent from it.
+                    continue
 
                 if event.get("type") == "response" and event.get("success") is False:
                     if model_recovery:
@@ -639,6 +738,15 @@ class PiRunner:
                             "ENVIRONMENT_FAILURE", "备用模型配置失败，请联系维护者检查模型目录。",
                             failure_category="model_configuration_failure",
                         )
+                    if pending["type"] == "set_model" and pending["model"].get("thinking"):
+                        pending["id"] = f"set-thinking-{pending['recovery']['number']}"
+                        pending["type"] = "set_thinking_level"
+                        pending_model_command = pending
+                        await send({
+                            "id": pending["id"], "type": pending["type"],
+                            "level": pending["model"]["thinking"],
+                        })
+                        continue
                     model_state["current"] = pending["model"]
                     pending_recovery = pending["recovery"]
                     last_assistant = None
@@ -844,6 +952,7 @@ class PiRunner:
                         command_id = f"set-model-{recovery_number}"
                         pending_model_command = {
                             "id": command_id,
+                            "type": "set_model",
                             "model": next_model,
                             "recovery": pending_recovery,
                             "prompt_id": f"recover-{recovery_number}",

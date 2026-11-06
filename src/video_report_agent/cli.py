@@ -35,6 +35,10 @@ def main():
             "--thinking", choices=PI_THINKING_LEVELS, help="Pi thinking level for this run"
         )
         run.add_argument("--report-mode", choices=["standard", "brief"], default="standard")
+        run.add_argument("--term-correction", action="store_true", help="核对并修正名称与术语")
+        run.add_argument(
+            "--visual-enhancement", action="store_true", help="抽帧生成画面描述辅助理解"
+        )
         run.add_argument("--transcript-mode", choices=["auto", "asr-only", "fused"], default="auto")
         run.add_argument("--ocr-mode", choices=["off", "auto", "roi", "on"], default="off")
         run.add_argument("--ocr-roi")
@@ -101,6 +105,8 @@ def main():
                 args.runs,
                 args.url,
                 report_mode=args.report_mode,
+                term_correction=args.term_correction,
+                visual_enhancement=args.visual_enhancement,
                 transcript_mode=args.transcript_mode,
                 transcript_sources=args.sources,
                 transcript_only=args.command == "transcribe",

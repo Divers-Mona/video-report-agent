@@ -28,7 +28,8 @@ json.dump({{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "cwd": os.getcwd(),
            "leaked": sorted(k for k in os.environ
                             if k.endswith("_API_KEY")
                             or k in ("OPENAI_BASE_URL", "CLAUDE_CODE_USE_BEDROCK")),
-           "python": os.environ.get("VIDEO_REPORT_PYTHON")}},
+           "python": os.environ.get("VIDEO_REPORT_PYTHON"),
+           "utf8": os.environ.get("PYTHONUTF8")}},
           open("../fake-received.json", "w"))
 print('{{"type":"result"}}')
 reports = {{
@@ -60,7 +61,11 @@ def run_dir(tmp_path):
     (run / "input.json").write_text(json.dumps({
         "url": "https://example.test/v", "video_id": "BVx", "report_mode": "standard",
         "model_selection": {"api_key": "DO_NOT_STAGE"},
+        # Pi-extension features the CLIs cannot provide; the script must stage them off.
+        "diagrams": True, "term_correction": True, "visual_enhancement": True,
     }), encoding="utf-8")
+    (run / "visual").mkdir()
+    (run / "visual" / "observations.jsonl").write_text('{"frame_id":"frame-000001"}\n')
     (run / "download" / "source.info.json").write_text(
         json.dumps({"description": "视频简介", "title": "x"}, ensure_ascii=False),
         encoding="utf-8",
@@ -106,11 +111,17 @@ def test_successful_run_stages_pi_inputs_and_fills_description(
     workspace = out / "workspace"
     received = json.loads((out / "fake-received.json").read_text())
     assert Path(received["cwd"]) == workspace
-    assert received["stdin"] == generation_prompt(workspace, "standard", "report-template.html")
+    assert received["stdin"] == generation_prompt(
+        workspace, "standard", "report-template.html",
+        diagrams=False, term_correction=False, visual_enhancement=False,
+    )
+    for tool in ("generate_diagram", "lookup_term", "transcript.corrected.md"):
+        assert tool not in received["stdin"]
     assert received["has_key"] is False
     assert received["leaked"] == []
     assert received["pwd"] == str(workspace)
     assert received["python"] == sys.executable
+    assert received["utf8"] == "1"
     argv = received["argv"]
     assert argv[argv.index("--append-system-prompt") + 1] == WORKSPACE_SYSTEM_PROMPT
     assert argv[argv.index("--model") + 1] == "sonnet"
@@ -119,6 +130,12 @@ def test_successful_run_stages_pi_inputs_and_fills_description(
 
     staged_input = json.loads((workspace / "input.json").read_text())
     assert "model_selection" not in staged_input
+    assert staged_input["diagrams"] is False
+    assert staged_input["term_correction"] is False
+    assert staged_input["visual_enhancement"] is False
+    assert not (workspace / "visual").exists()
+    for extension in ("report_diagram.ts", "diagram.md", "term_correction.ts"):
+        assert not (workspace / extension).exists()
     assert (workspace / "modes" / "standard.md").is_file()
     assert not (workspace / "modes" / "brief.md").exists()
     assert not (workspace / "assets" / "brief-report-template.html").exists()
