@@ -67,6 +67,14 @@ YouTube 元数据检查可使用 `PATH="$PWD/.tooling/wsl/bin:$PATH" .venv-wsl/b
 
 服务地址、模型 ID、上下文窗口、输出上限和 reasoning 声明都由 `.env` 控制。当前 `.env` 中的上下文窗口 `131072`、输出上限 `32768` 来自 2026-10-03 对当前服务 `/props` 的只读检查（`default_generation_settings.n_ctx` 和 `params.n_predict`）；切换服务或模型后应按服务实际值手动更新，不会根据模型名称推断。`PI_API_KEY=local` 是当前无认证服务使用的占位值；需要认证时替换为服务密钥。Pi 的 `models.json` 仅更新 `local` provider，API key 保持 `$PI_API_KEY` 环境引用，现有其他 provider 与 `auth.json` 保留。生成的 `runs/<run-id>/input.json` 记录已解析的 provider/model，不记录 API key。
 
+单次生成可用 `--provider` 和 `--thinking` 改用 Pi 中其他已配置的 provider（`config/pi/models.json` 中的 provider，或 Pi 内置 provider）：
+
+```powershell
+.\video-report.cmd generate "https://www.bilibili.com/video/BV..." --provider zhipu --model "模型 ID" --thinking high
+```
+
+`--provider` 覆盖本次的 `PI_PROVIDER`，并忽略 `PI_MODEL`（它属于环境里的 provider）；非 `local` provider 必须同时给 `--model`，`--provider local` 未给模型时仍按上文读取 `/models`。`--thinking` 取 Pi 支持的 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，未指定时为 `low`。两项都不给时行为不变。选择写入 `input.json` 的 `model_selection`，由 `PiRunner` 转为 Pi 的 `--provider`、`--model`、`--thinking`。凭证仍由该 provider 的 Pi 配置提供：`PI_API_KEY` 只发给 `PI_PROVIDER` 指定的 provider，其他 provider 需要 Pi `auth.json` 或 `models.json` 中的环境引用。`transcribe` 接受同样的参数但不使用。
+
 ## AMD GPU 转写（HIP）
 
 `whisper-cpp` 使用 WSL 内的 ROCm/HIP 和本地 ggml 权重。需要已有可用的 AMD WSL 驱动、ROCm、`git`、CMake、Make 与 C/C++ 编译工具；`rocminfo` 应列出目标 GPU。安装脚本不安装系统驱动、不使用 Windows 原生 TheRock，也不需要报告模型服务。
@@ -120,6 +128,31 @@ cd D:\Project\video-report-agent
 WSL 内也可在任意目录运行 `bash /mnt/d/Project/video-report-agent/scripts/run-wsl.sh doctor`。默认产物在 `runs/<run-id>/`，包括 `transcript.md`、来源记录、`report.html` 和可能生成的 `report.png`。
 
 `doctor` 检查 Python、uv、Node/npm、Pi、yt-dlp、FFmpeg/FFprobe、Playwright Chromium 启动、本地 `/models` 可用性及本地 ASR 权重，不发送模型生成请求。它还离线检查 Deno 最低版本、EJS 版本与当前 yt-dlp 的配对要求，以及本地 core/lib 脚本是否可读且非空。启用 faster-whisper 时，它还会将一个临时合成短 WAV 交给 faster-whisper 的真实音频解码器，验证 PyAV API 兼容性；这一步不加载模型权重，也不做语音识别。`local-asr` extra 将 PyAV 限定在 `>=11,<19`：faster-whisper 1.2.1 仍会向 `av.open` 传 `metadata_errors`，而 PyAV 19 已删除此参数。ASR 缓存检查只读取当前 faster-whisper 版本解析到的 main revision，并确认 `config.json`、`model.bin` 和 `tokenizer.json` 均非空；不会实例化模型或联网下载。若当前 provider 不是 `local`，本地模型发现会标记为跳过。报告生成仍需用户自行判断内容准确性；启动检查和 mock 服务验证不代表真实 LLM 报告质量。
+
+### 用订阅 CLI 生成报告
+
+已完成转写的任务可以不经 Pi，直接用已登录的 Claude Code、Codex 或 OpenCode 生成报告，消耗各自的订阅或套餐额度，不需要 API key。在 Windows PowerShell 中用项目 `.venv` 运行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\cli_agent_report.py <run-id 或 run 目录> --backend claude
+.\.venv\Scripts\python.exe scripts\cli_agent_report.py <run-id> --backend codex
+.\.venv\Scripts\python.exe scripts\cli_agent_report.py <run-id> --backend opencode
+.\.venv\Scripts\python.exe scripts\cli_agent_report.py <run-id> --backend claude --model opus --effort high
+```
+
+不传 `--model`、`--effort` 时按后端取默认值：Claude 为 `sonnet` / `medium`，Codex 为 `gpt-6.1-sol` / `low`，OpenCode 为 `opencode-go/deepseek-v4.1-flash` / `max`；显式传入的值优先。`--effort` 对 Claude 是 `--effort`，对 Codex 是 `model_reasoning_effort`，对 OpenCode 是模型 variant（即 `-m provider/model#variant`）。OpenCode 的 variant 只能用一种写法给出：`--model` 已带 `#variant` 时不能再传 `--effort`，也不会追加默认 variant。`manifest.json` 和输出目录名记录实际生效的模型与强度。`--timeout` 默认 1800 秒，`--out` 可指定新的输出目录。
+
+脚本不修改 `runs/` 下的文件。默认输出在 `.local/evals/cli-agent-reports/<run-id>/<backend>-<model>-<effort>-<时间>/`：`workspace/` 是 CLI 的工作目录，内容与 Pi 隔离模式相同（转写、精简后的 `input.json`、简介元数据，以及只含本次模式文件和模板的 Skill），提示词与附加系统提示也由 `pi.py` 中 Pi 使用的同一函数生成；`cli.stdout.log`、`cli.stderr.log` 保存 CLI 原始输出；`manifest.json` 记录 backend、模型、强度、实际命令行、起止时间、耗时、退出码和检查结果。
+
+各 CLI 的限制方式：
+
+- Claude Code：`-p --safe-mode --restricted`，不加载 CLAUDE.md、Skills、插件、hooks 和 MCP；只开放 Read、Write、Edit、Bash。Read、Write、Edit 限定在工作目录，`acceptEdits` 自动接受工作目录内的编辑。Bash 没有沙箱，并通过 `--allowedTools Bash` 自动放行，可以读写工作目录以外的文件，只由附加系统提示约束；这与 Pi local 隔离模式的边界相同。Claude Code 还会把较大的工具输出写到 `~/.claude/projects/` 下。
+- Codex：`exec --ignore-user-config -s workspace-write -C <workspace> --ephemeral`，附加系统提示经 `developer_instructions` 传入，`project_doc_max_bytes=0` 不加载仓库 AGENTS.md。用户全局 `~/.codex/AGENTS.md` 是否仍被加载未核实。
+- OpenCode：`run --standalone --auto`，用私有 `XDG_CONFIG_HOME` 替换用户全局配置，附加系统提示作为 instructions 文件，`external_directory` 权限设为拒绝，并禁用项目配置与 Claude Code 兼容加载。OpenCode 自己的临时目录（`%TEMP%\opencode`）不受此限制，实测中模型在那里写过浏览器截图。
+
+子进程环境会移除所有以 `_API_KEY` 结尾的变量，以及 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`、`CLAUDE_CODE_USE_BEDROCK`、`CLAUDE_CODE_USE_VERTEX` 等会把 CLI 切到 API 计费或其他端点的变量。按 Ctrl-C 中断时，脚本先结束 CLI 进程树，再写入 `status` 为 `interrupted` 的 `manifest.json`。CLI 退出码非 0、超时、没有 `report.html`、HTML 不完整、`{{VIDEO_DESCRIPTION}}` 不是恰好一次、没有 `unit-NNNNNN` 引用或引用了 `transcript.md` 中不存在的 ID 时，脚本以非零退出并保留目录；通过后按原任务的 `download/source.info.json` 填入视频简介。
+
+这条路线绕过 Pi：没有 `agent_settled` / `stopReason` 完成判定、`pi.events.jsonl`、模型恢复和用量统计，也不写回任务状态或数据库，只用于本地评测和生成。检查只覆盖结构与来源 ID 是否存在，不评价内容是否忠实于原文。
 
 ## 本地语音识别
 

@@ -22,20 +22,25 @@ IMAGE_PATH = "/app/web-service/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 OUTPUTS = ("report.html", "assets", "sessions", "inspection")
 
 
-def stage_inputs(run: Path) -> Path:
-    stage = run / ".generation"
+def stage_inputs(run: Path, stage: Path | None = None) -> Path:
+    """Copy only the generation inputs of ``run`` into a new ``stage`` directory."""
+    stage = stage or run / ".generation"
     stage.mkdir(mode=0o700)
     shutil.copy2(run / "transcript.md", stage / "transcript.md")
-    metadata = json.loads((run / "input.json").read_text()) if (run / "input.json").exists() else {}
+    metadata = (
+        json.loads((run / "input.json").read_text(encoding="utf-8"))
+        if (run / "input.json").exists() else {}
+    )
     (stage / "input.json").write_text(
         json.dumps(
             {key: metadata[key] for key in ("url", "video_id", "report_mode") if key in metadata},
             ensure_ascii=False,
-        )
+        ),
+        encoding="utf-8",
     )
     info = run / "download" / "source.info.json"
     if info.is_file():
-        source = json.loads(info.read_text())
+        source = json.loads(info.read_text(encoding="utf-8"))
         (stage / "download").mkdir()
         (stage / "download" / "source.info.json").write_text(
             json.dumps(
@@ -43,7 +48,8 @@ def stage_inputs(run: Path) -> Path:
                     "description": source.get("description"),
                 },
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
         )
     return stage
 

@@ -83,14 +83,34 @@ def resolve_model_selection(
     model_override: str | None = None,
     *,
     default_provider: str = "deepseek",
+    provider_override: str | None = None,
 ) -> dict[str, str] | None:
-    """Resolve a model for a run; discover only when local selection is omitted."""
+    """Resolve a model for a run; discover only when local selection is omitted.
+
+    ``provider_override`` (CLI ``--provider``) replaces PI_PROVIDER and ignores
+    PI_MODEL, which belongs to the environment's provider. A non-local override
+    therefore needs an explicit model.
+    """
+    if provider_override is not None:
+        provider = provider_override.strip()
+        explicit_model = (model_override or "").strip()
+        if not provider:
+            raise LocalModelError("--provider must not be empty")
+        if provider != "local" and not explicit_model:
+            raise LocalModelError(f"--provider {provider} requires --model")
+        if explicit_model:
+            return {"provider": provider, "model": explicit_model}
+        return _discover_single_model(provider)
     provider = (os.getenv("PI_PROVIDER") or default_provider).strip()
     explicit_model = (model_override or os.getenv("PI_MODEL") or "").strip()
     if provider != "local":
         return {"provider": provider, "model": explicit_model} if model_override else None
     if explicit_model:
         return {"provider": provider, "model": explicit_model}
+    return _discover_single_model(provider)
+
+
+def _discover_single_model(provider: str) -> dict[str, str]:
     model_ids = discover_models()
     if not model_ids:
         raise LocalModelError("The model service returned no model IDs; set PI_MODEL explicitly")

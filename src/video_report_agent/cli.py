@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from .doctor import run_doctor
 from .execution import generate
 from .local_models import LocalModelError, discover_models, resolve_model_selection
-from .pi import PROJECT_ROOT
+from .pi import PI_THINKING_LEVELS, PROJECT_ROOT
 from .pipeline import create_run
 
 
@@ -27,6 +27,13 @@ def main():
         run = sub.add_parser(command)
         run.add_argument("url")
         run.add_argument("--model", help="select a model ID for this run")
+        run.add_argument(
+            "--provider",
+            help="Pi provider for this run (overrides PI_PROVIDER; non-local requires --model)",
+        )
+        run.add_argument(
+            "--thinking", choices=PI_THINKING_LEVELS, help="Pi thinking level for this run"
+        )
         run.add_argument("--report-mode", choices=["standard", "brief"], default="standard")
         run.add_argument("--transcript-mode", choices=["auto", "asr-only", "fused"], default="auto")
         run.add_argument("--ocr-mode", choices=["off", "auto", "roi", "on"], default="off")
@@ -82,9 +89,13 @@ def main():
         model_selection = None
         if args.command == "generate":
             try:
-                model_selection = resolve_model_selection(args.model)
+                model_selection = resolve_model_selection(
+                    args.model, provider_override=args.provider
+                )
             except LocalModelError as exc:
                 parser.error(str(exc))
+            if args.thinking:
+                model_selection = {**(model_selection or {}), "thinking": args.thinking}
         status = generate(
             create_run(
                 args.runs,
