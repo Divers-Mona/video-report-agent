@@ -106,6 +106,8 @@ def test_weight_cache_script_uses_project_relative_model_outside_project_cwd(
     script_path = Path(__file__).parents[1] / "scripts" / "cache_faster_whisper_model.py"
     spec = importlib.util.spec_from_file_location("cache_faster_whisper_model", script_path)
     script = importlib.util.module_from_spec(spec)
+    # The script loads the checkout's .env at import; keep it out of the test session.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
     spec.loader.exec_module(script)
     script.PROJECT_ROOT = project
     calls = {}

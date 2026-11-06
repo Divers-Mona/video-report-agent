@@ -142,7 +142,7 @@ WSL 内也可在任意目录运行 `bash /mnt/d/Project/video-report-agent/scrip
 
 不传 `--model`、`--effort` 时按后端取默认值：Claude 为 `sonnet` / `medium`，Codex 为 `gpt-6.1-sol` / `low`，OpenCode 为 `opencode-go/deepseek-v4.1-flash` / `max`；显式传入的值优先。`--effort` 对 Claude 是 `--effort`，对 Codex 是 `model_reasoning_effort`，对 OpenCode 是模型 variant（即 `-m provider/model#variant`）。OpenCode 的 variant 只能用一种写法给出：`--model` 已带 `#variant` 时不能再传 `--effort`，也不会追加默认 variant。`manifest.json` 和输出目录名记录实际生效的模型与强度。`--timeout` 默认 1800 秒，`--out` 可指定新的输出目录。
 
-脚本不修改 `runs/` 下的文件。默认输出在 `.local/evals/cli-agent-reports/<run-id>/<backend>-<model>-<effort>-<时间>/`：`workspace/` 是 CLI 的工作目录，内容与 Pi 隔离模式相同（转写、精简后的 `input.json`、简介元数据，以及只含本次模式文件和模板的 Skill），提示词与附加系统提示也由 `pi.py` 中 Pi 使用的同一函数生成；`cli.stdout.log`、`cli.stderr.log` 保存 CLI 原始输出；`manifest.json` 记录 backend、模型、强度、实际命令行、起止时间、耗时、退出码和检查结果。
+脚本不修改 `runs/` 下的文件。默认输出在 `.local/evals/cli-agent-reports/<run-id>/<backend>-<model>-<effort>-<时间>/`：`workspace/` 是 CLI 的工作目录，内容与关闭独立图示、术语修正和画面辅助理解时的 Pi 隔离模式相同（转写、精简后的 `input.json`、简介元数据，以及只含本次模式文件和模板的 Skill），提示词与附加系统提示也由 `pi.py` 中 Pi 使用的同一函数按这些功能关闭生成；`cli.stdout.log`、`cli.stderr.log` 保存 CLI 原始输出；`manifest.json` 记录 backend、模型、强度、实际命令行、起止时间、耗时、退出码和检查结果。
 
 各 CLI 的限制方式：
 
@@ -152,7 +152,9 @@ WSL 内也可在任意目录运行 `bash /mnt/d/Project/video-report-agent/scrip
 
 子进程环境会移除所有以 `_API_KEY` 结尾的变量，以及 `ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`、`CLAUDE_CODE_USE_BEDROCK`、`CLAUDE_CODE_USE_VERTEX` 等会把 CLI 切到 API 计费或其他端点的变量。按 Ctrl-C 中断时，脚本先结束 CLI 进程树，再写入 `status` 为 `interrupted` 的 `manifest.json`。CLI 退出码非 0、超时、没有 `report.html`、HTML 不完整、`{{VIDEO_DESCRIPTION}}` 不是恰好一次、没有 `unit-NNNNNN` 引用或引用了 `transcript.md` 中不存在的 ID 时，脚本以非零退出并保留目录；通过后按原任务的 `download/source.info.json` 填入视频简介。
 
-这条路线绕过 Pi：没有 `agent_settled` / `stopReason` 完成判定、`pi.events.jsonl`、模型恢复和用量统计，也不写回任务状态或数据库，只用于本地评测和生成。检查只覆盖结构与来源 ID 是否存在，不评价内容是否忠实于原文。
+这条路线绕过 Pi：没有 `agent_settled` / `stopReason` 完成判定、`pi.events.jsonl`、模型恢复和用量统计，也不写回任务状态或数据库，只用于本地评测和生成。独立图示、术语修正和画面辅助理解依赖 Pi 扩展工具或视觉预处理结果，原任务开启了这些功能时，本路线仍按关闭处理，暂存的 `input.json` 也记为关闭。
+
+提示词允许在只有 Bash 时运行 `"$VIDEO_REPORT_PYTHON" -m video_report_agent.inspect_report` 检查报告；脚本把该变量设为运行脚本的 Python，并为子进程设置 `PYTHONUTF8=1`，避免检查器在 Windows 默认代码页下读取中文转写失败。检查器截图依赖 Playwright Chromium；项目 Windows `.venv` 未安装浏览器时，检查器返回 `status: error` 而不产生截图，可在 `.venv` 中运行 `playwright install chromium` 补装。检查只覆盖结构与来源 ID 是否存在，不评价内容是否忠实于原文。
 
 ## 本地语音识别
 

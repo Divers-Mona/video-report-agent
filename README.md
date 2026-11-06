@@ -9,7 +9,7 @@
 | 你想做什么 | 从这里开始 |
 |---|---|
 | 在线生成报告 | [打开 VReport](https://vreport.tri4t.xyz) |
-| 把已有转写交给自己的 Coding Agent | [下载 Skill ZIP v0.5.0](https://github.com/imexlovery/video-report-agent/releases/download/skill-zip-v0.5.0/video-report-skill-v0.5.0.zip) · [简短使用说明与示例](docs/skill-bundle/README.md) |
+| 把已有转写交给自己的 Coding Agent | [下载 Skill ZIP v0.5.1](https://github.com/imexlovery/video-report-agent/releases/download/skill-zip-v0.5.1/video-report-skill-v0.5.1.zip) · [简短使用说明与示例](docs/skill-bundle/README.md) |
 | 从视频链接运行完整流程 | [完整 CLI 安装说明](#方式二运行完整-cli-流水线) |
 
 ## 先看成品
@@ -52,13 +52,13 @@ Skill 包含四部分，使用时需要保留整个目录：
 
 ### 1. 准备完整转写
 
-使用自己的 ASR 工具，或已有完整字幕，保存为 `transcript.md`、TXT 或 SRT。尽量保留时间戳和说话人；缺少可靠时间时，报告会省略相应章节时间。
+可以使用作者字幕、B站 AI 自动字幕、自己的 ASR 转写或其他已有完整文本，保存为 `transcript.md`、TXT 或 SRT。尽量保留时间戳和说话人；缺少可靠时间时，报告会省略相应章节时间。
 
 ASR 负责把语音变成文字，Coding Agent 的模型负责阅读和生成报告，两者可以独立选择。
 
 ### 2. 获取完整 Skill 目录
 
-下载 [Skill ZIP v0.5.0](https://github.com/imexlovery/video-report-agent/releases/download/skill-zip-v0.5.0/video-report-skill-v0.5.0.zip) 并解压。包内有完整 Skill、简短说明，以及配套的转写和 HTML 示例；可以先按包内 `README.md` 试用。
+下载 [Skill ZIP v0.5.1](https://github.com/imexlovery/video-report-agent/releases/download/skill-zip-v0.5.1/video-report-skill-v0.5.1.zip) 并解压。包内有完整 Skill、简短说明，以及配套的转写和 HTML 示例；可以先按包内 `README.md` 试用。
 
 需要源码时，也可以克隆仓库：
 
@@ -100,12 +100,13 @@ my-report/
 
 ## 方式二：运行完整 CLI 流水线
 
-适合从 Bilibili / YouTube 单视频链接开始，自动完成下载、转写和报告生成：
+适合从 Bilibili / YouTube 单视频链接开始，自动获取文字稿并生成报告：
 
 ```text
 Bilibili / YouTube URL
-  → yt-dlp 下载 → FFmpeg 提取音频
-  → ASR → 规范转写（正文、来源 ID、时间）
+  → 获取文字稿：B站默认依次尝试作者字幕 → B站 AI 自动字幕 → ASR；YouTube 直接 ASR
+      仅需 ASR 时：yt-dlp 下载 → FFmpeg 提取音频 → 语音识别
+  → 规范转写（正文、来源 ID、时间）
   → Pi RPC + video-report Skill → HTML
   → Chromium 导出 PNG 长图
 ```
@@ -130,7 +131,7 @@ test -f .env || cp .env.example .env
 
 ### 配置模型与转写
 
-编辑仓库根目录的 `.env`，填写报告模型凭证，并选择一种 ASR 后端。以下示例使用云端转写：
+编辑仓库根目录的 `.env`，填写报告模型凭证。使用 ASR 时再配置相应后端；以下示例配置云端 ASR，供自动路由回退或手动选用：
 
 ```dotenv
 PI_PROVIDER=deepseek
@@ -208,17 +209,81 @@ uv run video-report generate 'https://www.youtube.com/watch?v=jNQXAC9IVRw' --asr
 
 输出目录为 `runs/<run-id>/`，主要阅读产物是 `report.html` 和 `report.png`；`transcript.md` 可用于来源核对。截图失败时 HTML 仍可完成，查看 `status.json` 的 `image_error`，确认 PNG 是否生成。
 
-Bilibili 的 CLI 默认自动按“作者字幕轨 → B站 ai-zh → ASR”取得文字稿，任一字幕正文可用即停止继续采集。YouTube 的 auto 模式直接使用 ASR，不支持选择 subtitle_track 或 bilibili_ai。主动指定 `--sources asr` 可只用 ASR；列出多路来源可做手动对照／融合。Web 手动选源只在 Local 高级设置开放，OCR 暂时关闭。Core 仍兼容旧的 `--transcript-mode fused` 字幕/OCR 调用，需要安装 `uv sync --extra enhancement`；本地 MLX 同时加 `--extra mlx`。登录配置及仅转写命令见[选源说明](docs/subtitle-sources.md)，完整参数见 `uv run video-report generate --help`。
-
 2026-10-19 在原有 WSL2 环境使用 faster-whisper `small` / CPU / INT8、显式 `en` 和本地报告模型，完整处理了 19 秒英文视频《Me at the zoo》，生成英文转写、中文 HTML 报告和 PNG。该样本首句存在误识别，且影响了报告表述；此实测证明处理流程可完成，不代表转写完全准确，也不代表其他语言均已验证。详见 [WSL 实测说明](docs/local-wsl.md#英文视频实测)。
+
+### 选择字幕与转写来源
+
+Bilibili 的 CLI 默认使用 `auto`，按“作者字幕轨 → B站 AI 自动字幕 `ai-zh` → ASR”依次尝试。取得可用字幕正文后就进入报告生成；只有前两路不可用时才运行 ASR。YouTube 的 auto 模式直接使用 ASR，不支持选择 `subtitle_track` 或 `bilibili_ai`。也可以通过 `--sources` 主动选择：
+
+| 来源 | CLI 参数 | 说明 |
+|---|---|---|
+| 作者字幕 | `--sources subtitle_track` | 使用 B站返回的非 AI 字幕轨 |
+| B站 AI 自动字幕 | `--sources bilibili_ai` | 直接获取平台已有的中文 `ai-zh` 字幕 |
+| ASR 语音识别 | `--sources asr` | 下载媒体并使用配置的 ASR 后端（`mlx`、`faster-whisper`、`whisper-cpp` 或 `paraformer`） |
+| 本地字幕文件 | `--sources subtitle_track --subtitle-file captions.srt` | 导入已有 SRT、VTT 或 ASS 字幕 |
+| 多路对照 | `--sources bilibili_ai asr` | 采集所有选中来源，按参数顺序选择首个可用主来源，其余参与局部校对 |
+
+```sh
+# 只使用 B站 AI 自动字幕
+uv run video-report generate 'https://www.bilibili.com/video/BV...' --sources bilibili_ai
+
+# 只生成文字稿，后续交给自己的 Coding Agent
+uv run video-report transcribe 'https://www.bilibili.com/video/BV...' --sources bilibili_ai
+```
+
+手动选源只采集选中的来源；上例的 AI 字幕不可用时会报错。多路对照会同时采集 AI 字幕和 ASR。仅选字幕且未开启画面辅助时，不下载媒体，也不要求 ASR 凭证。
+
+字幕需要登录态时，在 `.env` 中设置 `BILIBILI_SUBTITLE_BROWSER=chrome`（或 yt-dlp 支持的其他浏览器），读取该浏览器已有的 B站登录态；也可通过进程环境提供 `BILIBILI_SESSDATA`。默认不读取浏览器，凭据不要提交到 Git。导入字幕需要 `uv sync --extra enhancement`。详细规则见[选源说明](docs/subtitle-sources.md)。
+
+B站 AI 自动字幕的新接口 Protobuf 字段解析参考了 [ccBilly-aipm/bilibili-ai-subtitle](https://github.com/ccBilly-aipm/bilibili-ai-subtitle)（MIT）。感谢作者公开字幕提取流程与协议解析实现，为本项目的 AI 字幕支持提供了参考。
+
+### 报告流程中可选的工具与能力
+
+以下是完整 Core 流水线的开关。独立 Skill ZIP 使用你自己的 Agent 工具与配置。
+
+| 工具／能力 | 默认状态 | 如何开启或关闭 |
+|---|---|---|
+| 术语纠错 `term_correction` | 关闭 | CLI 添加 `--term-correction` 开启，省略即关闭；Python 用 `create_run(..., term_correction=True/False)` |
+| 画面辅助理解 | 关闭 | CLI 添加 `--visual-enhancement` 开启，省略即关闭；Python 用 `visual_enhancement=True/False`；目前仅支持 Bilibili 视频 |
+| 报告检查 `inspect_report` | 专用工具关闭 | `.env` 设置 `REPORT_REVIEW=1` 开启，`0` 关闭；Python 可用 `PiRunner(review=True/False)` |
+| 独立图示 `generate_diagram` | 开启，Agent 按需调用 | Python 用 `create_run(..., diagrams=False)` 关闭，`True` 开启；当前没有 CLI 开关 |
+| OCR 画面文字识别（旧融合流程） | 关闭 | CLI 用 `--transcript-mode fused --ocr-mode auto` 开启，`--ocr-mode off` 关闭；需安装 `enhancement` 扩展 |
+
+画面辅助会额外取得视频轨、抽取 9 帧，使用本次任务选定的主报告模型生成画面描述，再交给报告 Agent。它沿用主模型的 provider、model、思考档位与 Pi 认证（API Key 或 OAuth），无需单独的视觉模型或 Key。主模型须实际支持图片，并在 `config/pi/models.json` 对应模型中声明 `"input": ["text", "image"]`；未声明图片输入时会明确报错。开启后会增加一次图文模型请求的耗时与用量。
+
+独立图示最多调用一次，可通过下方的独立绘图模型配置指定模型；开启时也可由 Agent 判断无需绘图。
+
+报告检查工具向同一 Agent 返回程序检查结果与可用截图，最多检查两次、集中修订一次。`REPORT_REVIEW=0` 关闭专用工具；Skill 仍要求集中自检，也可以通过 Bash 调用检查器。基础读写／命令工具、HTML 交付检查和最终 PNG 导出属于常规流程，当前没有对应 CLI 关闭参数。完整参数见 `uv run video-report generate --help`。
+
+### 术语纠错的搜索服务配置
+
+术语纠错在阅读或写作遇到重要名称疑点时按需核对，保留原始转写。开启 `--term-correction` 后，Agent 可使用 `record_term_review`、`lookup_term`、`fetch_term_source`；搜索与网页抓取每任务合计最多 3 次，按需产生费用。搜索服务独立于报告模型，通过 `.env` 二选一配置：
+
+```dotenv
+# 方案一：DeepSeek Search/Fetch（默认供应商）
+TERM_SEARCH_PROVIDER=deepseek
+DEEPSEEK_SEARCH_API_KEY=your-official-deepseek-key
+```
+
+```dotenv
+# 方案二：OpenAI Responses Web Search
+TERM_SEARCH_PROVIDER=openai
+OPENAI_SEARCH_API_KEY=your-openai-api-key
+OPENAI_SEARCH_MODEL=gpt-6-luna
+```
+
+DeepSeek 优先读取 `DEEPSEEK_SEARCH_API_KEY`，留空时使用 `DEEPSEEK_API_KEY`；OpenAI 优先读取 `OPENAI_SEARCH_API_KEY`，留空时使用 `OPENAI_API_KEY`。两者均不读取 `PI_API_KEY` 或 `DASHSCOPE_API_KEY`，需提供对应官方服务凭据。OpenAI 的搜索模型可单独选择；示例显式使用 `gpt-6-luna`，未配置 `OPENAI_SEARCH_MODEL` 时代码默认 `gpt-6.1-sol`，模型和搜索分别计费。
+
+保存配置后，为生成命令添加 `--term-correction` 即可启用；仅填写搜索配置不会自动开启纠错。配置保存到新任务，运行中的服务修改 `.env` 后需重启。详细证据规则与 Docker 配置见[术语修正说明](docs/term-correction.md)。
 
 ## 运行与数据约定
 
 - **存储**：独立 CLI 默认使用 `runs/state.sqlite3`，保存任务、转写、报告 HTML 与缓存等结构化数据。任务目录里的 JSON、转写和 HTML 是执行导出；媒体、PNG、Pi 会话和诊断日志仍存文件。详见 [SQLite 存储](docs/sqlite-storage.md)。
 - **配置**：从项目根目录读取 `.env`，进程环境变量优先。Pi 配置保存在工作目录的 `config/pi/`，缺失的模型默认配置会初始化，已有配置保留。其他目录通过启动前的 `PI_CODING_AGENT_DIR` 指定。不要提交凭证。
+- **独立绘图模型**：可同时设置 `DIAGRAM_PROVIDER`、`DIAGRAM_MODEL`，可选 `DIAGRAM_THINKING`；在 Pi 中配置对应 provider 的 API Key 或 OAuth。留空时沿用主报告模型和认证，新配置只影响新任务。OAuth 需要无隔离 Local；Docker 绘图使用 API Key。见 [Core 架构](docs/ARCHITECTURE.md#完成与检查)。
 - **隔离**：示例使用 `PI_TASK_ISOLATION=local`，Pi 工具拥有本机用户权限。Docker 模式需要应用镜像、Docker daemon 与同一 scope 的健康 task cleaner；选用后失败不会退回本地执行。详见 [Core 架构](docs/ARCHITECTURE.md)。
 - **追踪**：`run.trace.jsonl` 记录流水线阶段，`pi.events.jsonl` 记录 Agent 模型与工具事件。完成需等待 `agent_settled`、最终 assistant `stopReason == "stop"`，并通过 HTML 交付检查。
-- **边界**：内置视频入口支持公开 Bilibili 和 YouTube 单视频，不提供登录、私有视频访问或播放列表批处理。YouTube 接受 watch、youtu.be 和 shorts 链接；单视频链接中的 `list` 参数会移除，纯播放列表链接被拒绝。下载前按元数据拦截正在直播或即将直播的视频。视频时长默认上限 5 小时（可用 MEDIA_MAX_DURATION_SECONDS 调整），执行期限 30 分钟；本地停止后已提交的云 ASR 仍可能继续计费。默认只理解转写，画面中的非语音信息可能缺失。Windows 使用 [WSL2 CLI 入口](docs/local-wsl.md)；原生 Windows 运行未作为已验证方案。
+- **边界**：内置视频入口支持公开 Bilibili 和 YouTube 单视频；B站字幕提取可使用已有登录态，不提供私有视频访问或播放列表批处理。YouTube 接受 watch、youtu.be 和 shorts 链接；单视频链接中的 `list` 参数会移除，纯播放列表链接被拒绝。下载前按元数据拦截正在直播或即将直播的视频。视频时长默认上限 5 小时（可用 MEDIA_MAX_DURATION_SECONDS 调整），执行期限 30 分钟；本地停止后已提交的云 ASR 仍可能继续计费。默认只理解转写，画面中的非语音信息可能缺失。Windows 使用 [WSL2 CLI 入口](docs/local-wsl.md)；原生 Windows 运行未作为已验证方案。
 
 ## 开发与进一步阅读
 

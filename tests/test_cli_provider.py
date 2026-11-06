@@ -111,6 +111,8 @@ print(json.dumps({{"type":"agent_settled"}}),flush=True)
     # The CLI-agent script shares these texts with the Pi path.
     assert received[received.index("--append-system-prompt") + 1] == WORKSPACE_SYSTEM_PROMPT
     invocation = json.loads((workspace / "invocation.json").read_text())
+    # input.json has no feature keys: Pi defaults diagrams on, the rest off.
     assert invocation["prompt"] == generation_prompt(
-        workspace, "brief", "brief-report-template.html"
+        workspace, "brief", "brief-report-template.html",
+        term_correction=False, visual_enhancement=False, diagrams=True,
     )

@@ -64,6 +64,7 @@ class RecoveryInput:
         command = json.loads(data)
         if command["type"] == "prompt":
             self.process.prompts.append(command["message"])
+            self.process.prompt_thinking.append(self.process.thinking)
             index = len(self.process.prompts) - 1
             self.process.lines.extend(self.process.steps[index])
             return
@@ -73,6 +74,13 @@ class RecoveryInput:
             self.process.lines.append({
                 "type": "response", "id": command["id"], "command": "set_model",
                 "success": True,
+            })
+            return
+        if command["type"] == "set_thinking_level":
+            self.process.thinking = command["level"]
+            self.process.lines.append({
+                "type": "response", "id": command["id"], "command": "set_thinking_level",
+                "success": self.process.thinking_success,
             })
             return
         raise AssertionError(f"unexpected RPC command: {command['type']}")
@@ -90,6 +98,9 @@ class RecoveryProcess:
         self.prompts = []
         self.model_commands = []
         self.current_model = None
+        self.thinking = "low"
+        self.thinking_success = True
+        self.prompt_thinking = []
         self.workspace = workspace
 
     async def readline(self):
@@ -99,6 +110,37 @@ class RecoveryProcess:
 def test_default_thinking_is_low():
     assert PiRunner().thinking == "low"
     assert PiRunner(thinking="high").thinking == "high"
+
+
+@pytest.mark.parametrize("thinking_success", [True, False])
+def test_recovery_applies_each_models_thinking_before_continuing(tmp_path, thinking_success):
+    primary = {"provider": "primary", "model": "first", "thinking": "low"}
+    alternate = {"provider": "backup", "model": "second", "thinking": "high"}
+    final = {"provider": "fallback", "model": "third", "thinking": "medium"}
+    steps = [
+        provider_attempt(model["provider"], model["model"], index, stop_reason="error",
+                         error="HTTP 400 data_inspection_failed: input data")
+        for index, model in enumerate((primary, alternate), 1)
+    ]
+    steps.append(provider_attempt(final["provider"], final["model"], 3, stop_reason="stop"))
+    process = RecoveryProcess(steps)
+    process.thinking_success = thinking_success
+    recovery = {"selected": primary, "alternate": alternate, "final_fallback": final}
+    state = {"initial": primary, "current": primary.copy(), "alternate": alternate,
+             "final_fallback": final, "recovery_scheduled": 0, "recovery_count": 0,
+             "request_count": 0}
+    consume = PiRunner(model_recovery=recovery)._consume(
+        process, tmp_path, "generate report", model_recovery=recovery,
+        model_state=state, deadline=time.monotonic() + 900,
+    )
+    if thinking_success:
+        assert asyncio.run(consume) == final
+        assert process.prompt_thinking == ["low", "high", "medium"]
+    else:
+        with pytest.raises(PiError) as error:
+            asyncio.run(consume)
+        assert error.value.failure_category == "model_configuration_failure"
+        assert process.prompt_thinking == ["low"]
 
 
 def test_public_resume_keeps_one_pi_session_and_prior_work(tmp_path):
@@ -400,10 +442,18 @@ def test_final_fallback_has_reserved_attempt_and_never_routes_back(tmp_path, pat
     assert state["recovery_count"] == len(sequence) <= 3
 
 
-def test_docker_recovery_snapshots_final_provider(tmp_path, monkeypatch):
+@pytest.mark.parametrize("drawing,enabled", [
+    (None, True), ("drawing", True), ("drawing", False), ("primary", True),
+])
+def test_docker_recovery_snapshots_final_provider(tmp_path, monkeypatch, drawing, enabled):
     from video_report_agent import pi
 
     (tmp_path / "transcript.md").write_text("synthetic transcript")
+    (tmp_path / "input.json").write_text(json.dumps({
+        "diagrams": enabled,
+        **({"diagram_model_selection": {"provider": drawing, "model": "fixture"}}
+           if drawing else {}),
+    }))
     monkeypatch.setattr(pi, "PI_AGENT_DIR", tmp_path / "shared-pi")
     selections = []
 
@@ -420,7 +470,11 @@ def test_docker_recovery_snapshots_final_provider(tmp_path, monkeypatch):
                 "final_fallback": {"provider": "final", "model": "fixture"}}
     asyncio.run(PiRunner(provider="primary", model="fixture", api_key="FAKE",
                         model_recovery=recovery, isolation="docker").run(tmp_path))
-    assert [item["provider"] for item in selections] == ["primary", "alternate", "final"]
+    assert [item["provider"] for item in selections] == (
+        ["primary"] + ([drawing] if drawing and enabled else []) + ["alternate", "final"]
+    )
+    if drawing and enabled:
+        assert selections[1]["api_key"] == ("FAKE" if drawing == "primary" else None)
 
 
 @pytest.mark.parametrize("category,count,seconds,expected_action", [
@@ -577,11 +631,12 @@ print(json.dumps({"type":"agent_settled"}),flush=True)
         asyncio.run(PiRunner(review=True, isolation="local").run(workspace))
     invocation = json.loads((workspace / "invocation.json").read_text())
     assert Path(invocation["cwd"]) == workspace
-    assert "read,write,edit,bash,inspect_report" in invocation["command"]
+    assert "read,write,edit,bash,inspect_report,generate_diagram" in invocation["command"]
     assert "--extension" in invocation["command"]
     assert "{{VIDEO_DESCRIPTION}}" in invocation["prompt"]
     assert "不要读取、改写或自行生成视频简介" in invocation["prompt"]
     assert "蓝色或黄色背景" not in invocation["prompt"]
+    assert "布局前读取 modes/standard.md 的选型表" in invocation["prompt"]
 
 
 def test_project_provider_model_and_api_key_are_passed_but_redacted(tmp_path, monkeypatch):

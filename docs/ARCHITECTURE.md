@@ -15,7 +15,9 @@
 | [download_worker.py](../src/video_report_agent/download_worker.py)、[bilibili_ytdlp.py](../src/video_report_agent/bilibili_ytdlp.py) | 项目 yt-dlp 入口、Bilibili 缺失页面状态的签名详情兼容、平台备用媒体地址选择 |
 | [asr.py](../src/video_report_agent/asr.py)、[whisper_cpp.py](../src/video_report_agent/whisper_cpp.py)、[paraformer.py](../src/video_report_agent/paraformer.py) | MLX/faster-whisper/whisper.cpp 本地 ASR 与云端 ASR、云任务轮询、两段结果与时间戳合并 |
 | [transcript.py](../src/video_report_agent/transcript.py)、[transcript_foundation.py](../src/video_report_agent/transcript_foundation.py) | 来源事件、规范单元、可选字幕/OCR 融合 |
+| [visual.py](../src/video_report_agent/visual.py) | 视觉专用视频轨、抽帧、带时间戳的画面描述及报告读取约定；实验脚本复用此模块 |
 | [pi.py](../src/video_report_agent/pi.py)、[产品 Skill](../src/video_report_agent/skills/video-report/SKILL.md) | 选择模式资产、Pi RPC 和完成判断；Skill 规定内容与表达。暂存与提示词函数也供本地评测脚本 [cli_agent_report.py](../scripts/cli_agent_report.py) 调用订阅 CLI |
+| [report_diagram.ts](../src/video_report_agent/report_diagram.ts)、[diagram.py](../src/video_report_agent/diagram.py) | 主 Agent 按需委派独立绘图会话，程序将 SVG 嵌入指定位置 |
 | [report_content.py](../src/video_report_agent/report_content.py)、[report_image.py](../src/video_report_agent/report_image.py) | 原始简介处理、HTML 后处理与长图导出 |
 | [storage.py](../src/video_report_agent/storage.py) | SQLite 正文、执行身份、缓存认领与结构化事实；支持调用方活动事务 |
 | [reuse.py](../src/video_report_agent/reuse.py)、[retention.py](../src/video_report_agent/retention.py) | 兼容输入复用与媒体清理 |
@@ -40,6 +42,16 @@ ASR 片段编号保留原始来源位置，过滤空白或无效片段后允许�
 
 `whisper-cpp` 通过子进程执行本地 HIP `whisper-cli`，继承受监督 Worker 的进程组。适配器验证 GPU 初始化日志，将 JSON `offsets`（毫秒）转换为共享规范片段，并保留原始输出及日志。可执行文件和权重的路径、大小、修改时间纳入持久运行参数与缓存身份，推理前核对其未变；安装构建与模型下载为显式准备步骤。具体参数及部署入口见 [HIP 转写](local-wsl.md#amd-gpu-转写hip)。
 
+### 可选画面辅助理解
+
+任务参数 `visual_enhancement` 默认 `false`，CLI 对应 `--visual-enhancement`；目前仅支持 Bilibili，YouTube 任务在创建时拒绝此开关。开启后，在完整转写准备好之后执行 `visual` 阶段，再进入原有 Pi 生成。命中转写缓存也会执行此阶段，原字幕与规范单元保持不变。
+
+优先使用已有的主视频媒体；需要另取视频轨时，以所选分 P 的 CID 从 Bilibili API 获取，保存为 `download/visual.mp4`，与 ASR 的 `download/source.*` 分开。当前按 9 个等分时间窗中心取解码帧，以实际 PTS 记录时间。一次图文请求读取各帧和附近 ±15 秒字幕，生成独立观察；使用本次主报告 `PiRunner` 已解析的 provider、model、思考档位与认证覆盖，由 `visual_request.mjs` 通过 Pi ModelRuntime 调用，复用项目模型配置、API Key／OAuth 与代理设置。模型须实际支持图片，配置 `input` 须包含 `image`，缺少时在发出请求前报错；不切换视觉供应商。
+
+`visual/observations.jsonl` 与原转写平行保存，报告模型沿用调用方原选择，只读取描述文本；视觉来源用 `data-source-frames`，口述用 `data-source-units`。Docker 生成目录只接收描述文本和开关，不传帧图片，也不为视觉预处理额外传入凭据。视觉准备失败时任务失败，保留诊断，不自动重试或切换模型。
+
+帧图片沿用资源产物保存，视觉专用视频沿用媒体清理；描述、清单、Pi 规范响应和用量保存为运行文档。`usage.py` 按实际 provider/model 将视觉请求与报告请求合并计数和估算费用，价格缺失时计入未定价调用；历史 DeepSeek 直接调用用量仍可读取。策略修改集中在 `visual.py`，独立实验入口仍保留在 `evals/sparse-visual/`。
+
 规范单元具有 ID、时间范围与来源关系，`transcript.md` 为模型可读视图；报告的 `data-source-units` 用来定位来源，不能单凭绑定合法判断内容忠实。
 
 `run.trace.jsonl` 记录下载、FFmpeg、ASR、转写、Agent、截图阶段；`pi.events.jsonl` 记录模型与工具事件。两层保留各自职责。
@@ -56,17 +68,31 @@ Agent 日志默认保留每轮结束消息与 usage、工具参数/结果、生�
 
 ## 完成与检查
 
+生成 Skill 以具体对象、动作和关系直接成文，单一作者归属由题头承接；个人经历、多人分歧和第三方引用保留必要主体。图内只表达关系与必要标签，外部图注仅用短图名，补充论证在正文展开；强调框讲完内容即止，必要归属可用短署名，条件与结论合写。材料处理、生成及检查记录留在工作目录，来源折叠区只保留作品信息和必要定位映射。文风检查纳入既有的一轮集中检查与修订，不增加独立审稿调用。
+
+主报告优先委派具体事件或例子中的一个局部关系；主体、连线或限定过多时缩小选题，少用需猜含义的符号，背景、来源说明和证据分级留正文。独立图示用少量主体、最少连线和短标签直接表达，配色自由简洁。主 Skill 的语言规则以具体文字写入 `diagram.md` 并实际加载；正文、委派参数和图示均保留原文条件、时态与判断强度，条件下的强结论不逐层改弱，原文的可能性不升级为确定；具体前提表达一次，不自行加推演、尚未证实等评价。沿用一次自主生成，不新增流程。
+
+任务输入 `diagrams` 默认 `true`，`false` 时不提供绘图工具；没有前端选择控件。主 Agent 决定图示必要性、位置、解释目标、局部上下文与来源 ID，至多调用一次 `generate_diagram`。扩展从完整转写提取指定原文，启动全新 Pi RPC 进程／会话，只加载独立绘图指引，不继承主会话历史、不提供任何工具。未配置独立绘图模型时，子会话沿用调用时的模型和思考档位；配置后使用保存的绘图模型，关闭自动重试，180 秒截止，仅一次输出 SVG。产物与会话保存在 `assets/diagram/`，主上下文只收到插入标记。Python 在检查预览和交付时内联嵌入 SVG、图注及来源绑定；已委派却缺图或缺插入位置时交付失败，不把完整绘图过程交还主 Agent。
+
+独立绘图同时设置 `DIAGRAM_PROVIDER` 与 `DIAGRAM_MODEL`，可选 `DIAGRAM_THINKING`；思考强度省略时沿用主会话。新任务将其保存为 `diagram_model_selection`，后续环境修改不改变排队任务；历史任务缺字段时继续沿用主模型。程序调用可通过 `create_run(diagram_model_selection={...})` 指定，传空字典可显式沿用主模型。此配置不改变主报告或术语 Web Search 的模型路由。
+
+子会话按绘图模型的 provider 解析各自的 Pi 认证：OAuth 从链接的 `auth.json` 读取，不转成 `--api-key`；非 OAuth 模型保留 API Key 传递，包括同 provider 下只在父进程生效的临时 Key。不同 provider 使用各自已配置的 Key，不复用主模型的临时 Key。任务输入只保存 provider、model、thinking，不保存凭据。Docker 快照额外包含选定绘图模型及其 API Key，OAuth 仍只支持无隔离 Local；术语 Web Search 的 provider、模型与凭据继续独立配置。
+
+子会话的请求与完成用量通过 RPC notification 写入同一 `pi.events.jsonl`，标记 `_agent_role: diagram`，参与现有费用汇总；这些事件不参与主会话的完成或模型恢复判断。针对实测出现的主 Agent 回读，扩展拦截常规 Read/Bash 对图示材料和检查 HTML 的直接访问，检查器返回 `diagram_count` 与 PNG 供确认；该路径约束不等于文件系统沙箱。取消和执行时限仍由原 Worker／任务容器负责，工具的取消信号同时停止绘图进程。独立会话仅隔离上下文，其输出的语义和布局仍需核对。
+
 Pi consumer 等待 `agent_settled`，并要求最终 assistant 的 `stopReason == "stop"`；`agent_end` 可能出现在重试或压缩之前。受控续跑只处理调用方明确配置且可识别的模型请求错误，沿用当前 Pi session 和任务工作区；报告仍须通过完整 HTML 检查才返回成功。整个 Worker 仍受调用方传入的总 deadline 限制。截图失败记录 `image_error`，HTML 仍可进入 `RENDERED`。
 
-`REPORT_REVIEW` 默认关闭。开启后向同一 Agent 提供检查工具；工具返回 `semantic_review: not_performed`、`visual_quality: not_scored`，不保证模型调用、修复或质量提升。
+`REPORT_REVIEW` 默认关闭。开启后向同一 Agent 提供检查工具；工具或同一检查器的 Bash CLI 检查来源 ID 与布局，并返回转述、元叙述、正文作者姓名和明显重复句段的候选位置（章节、DOM 路径、来源 ID、重复的前一位置）。内容检测只覆盖表层模式与至少 24 字的相同句段，跳过题头来源、导航、简介与来源说明；作者姓名按输入的 uploader 精确匹配，别称、同义重复及图文语义重复由当前 Agent 在原有集中修订中判断。必要归属可能命中，检查器不删词、不作语义通过判定；仍返回 `semantic_review: not_performed`、`visual_quality: not_scored`，不保证模型调用、修复或质量提升。
 
 ## Pi 任务容器
+
+任务 `term_correction` 默认关闭，CLI 可用 `--term-correction` 开启。启用时在同一 Pi 阅读或写作遇到重要疑点后按需核对，不增加全文校订阶段。`record_term_review` 校验来源与原文位置，修正版保留单元 ID 和时间；元数据、修正记录和修正版进入 `run_documents`，不进入共享转写缓存。开启 correction 即提供取证工具，不再设置独立搜索许可；`TERM_SEARCH_PROVIDER` 在 DeepSeek 与 OpenAI 间二选一并保存到新任务。DeepSeek 使用直接 Search/Fetch API，OpenAI 使用独立 Responses Web Search 请求，模型摘要与原文证据分开；独立凭据和请求预算见[术语修正](term-correction.md)。
 
 `PiRunner` 默认直接使用宿主机的 Pi；只有显式设置 `PI_TASK_ISOLATION=docker` 或 `isolation="docker"` 才为每个任务启动 Docker 容器。选择隔离模式后若启动失败，任务直接失败，不回退到宿主机。下载、ASR 和交付后的简介填充/PNG 仍在可信 Worker 中运行。
 
 公开仓库的 `.env.example` 为本地 CLI 入门显式设置 `PI_TASK_ISOLATION=local`，复制后无需 Docker 或清理器；这与代码默认值一致，也不改变托管服务 Public 模式强制使用 Docker 的策略。公开 Core 不包含托管服务的 Dockerfile 或 Compose 部署配置。
 
-每个任务仅挂载 `.generation/` 到 `/workspace`，材料为完整转写（含来源 ID）、来源/模式元数据、简介及选定 Skill/template。当前、备用及可选最终模型由可信侧使用已安装 Pi 的离线目录解析；API-key 配置快照单独只读挂载，并复制到容器 tmpfs 中供 Pi 使用。不提供共享认证目录、OAuth、其他任务或调用方环境；不支持隔离模式中的 OAuth 模型。只有报告、assets、sessions、inspection 回传原 run，回传拒绝符号链接及非普通文件。
+每个任务仅挂载 `.generation/` 到 `/workspace`，材料为完整转写（含来源 ID）、来源/模式元数据、简介及选定 Skill/template。当前、备用、可选最终模型及独立绘图模型由可信侧使用已安装 Pi 的离线目录解析；API-key 配置快照单独只读挂载，并复制到容器 tmpfs 中供 Pi 使用。不提供共享认证目录、OAuth、其他任务或调用方环境；不支持隔离模式中的 OAuth 模型。只有报告、assets、sessions、inspection 及术语修正的三个文档回传原 run，回传拒绝符号链接及非普通文件。
 
 容器复用调用方配置的 `PI_TASK_IMAGE`（默认 `video-report-agent:linux-amd64`），以控制端的非 root UID/GID 运行；只读根文件系统、无 capabilities、no-new-privileges、受限 tmpfs，默认 2 GiB 内存、2 CPU、256 PID。每个任务创建独立 bridge，无端口发布、host PID/IPC/network 或 Docker socket。任务 bridge 与服务及其他任务分离；这没有实现所有宿主机/局域网私网出站封锁。模型凭证可被任务 bash 读取，是当前保留风险。
 
@@ -85,3 +111,5 @@ CLI 从项目 `.env` 加载配置，进程环境优先。`PI_PROVIDER=local` 时
 `usage.json` 缓存 LLM 聚合，按日志文件元信息及语义版本失效。ASR backend/时长元数据有进程内有界缓存，费用每次按当前传入费率计算。DeepSeek V4.1 Flash 的 QwenAI 北京价格估算按北京时间 08:00–22:00 忙时、其余时间闲时计算；当前规则依照供应商价目表，不加入日历假日判断。其他可用 Pi 美元估算单列；均为估算，不是实时查询或供应商账单。缺失价格保持未知。
 
 `ingest.probe_bilibili_video(source)` 通过现有 yt-dlp 只查询指定分 P 的标题与时长，不下载媒体、不创建任务文件；拒绝未知、非正时长和超过 MEDIA_MAX_DURATION_SECONDS（默认 5 小时）的视频。返回规范 URL、BVID、分 P、video_id、title、duration。查询失败抛出 `UrlIngestError`，整体查询上限 45 秒。
+
+Standard 的布局选型由现有 Pi Agent 根据模式内关系—字段—误用—降级表完成，模板提供开放式定义、映射、步骤路线和分叉示例。整篇组件节奏与图文重复检查合并到原有集中检查。详见 [Standard 组件选型](standard-components.md)。

@@ -4,6 +4,7 @@
 - [ARCHITECTURE：模块、流程与数据](ARCHITECTURE.md)
 - [SQLite 执行存储与嵌入事务](sqlite-storage.md)
 - [可选文字稿来源、B站 AI 字幕与 ASR 对照](subtitle-sources.md)
+- [按需术语修正、联网取证与任务容器](term-correction.md)
 - [PLAN：候选方向与待办](PLAN.md)
 - [稀疏画面辅助理解：候选方案与实验设计](sparse-visual-understanding.md)
 - [DECISIONS：重要选择、原因与代价](DECISIONS.md)

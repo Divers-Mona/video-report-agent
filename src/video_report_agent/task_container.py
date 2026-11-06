@@ -15,29 +15,43 @@ import uuid
 from pathlib import Path
 
 from .task_cleaner import require_cleaner
+from .term_correction import TERM_DOCUMENTS, search_config
 
 TASK_PATH = Path("/workspace")
 IMAGE_PYTHON = "/app/web-service/.venv/bin/python"
 IMAGE_PATH = "/app/web-service/.venv/bin:/usr/local/bin:/usr/bin:/bin"
-OUTPUTS = ("report.html", "assets", "sessions", "inspection")
+OUTPUTS = ("report.html", "assets", "sessions", "inspection", *TERM_DOCUMENTS)
 
 
-def stage_inputs(run: Path, stage: Path | None = None) -> Path:
-    """Copy only the generation inputs of ``run`` into a new ``stage`` directory."""
+def stage_inputs(run: Path, stage: Path | None = None, *, metadata: dict | None = None) -> Path:
+    """Copy only the generation inputs of ``run`` into a new ``stage`` directory.
+
+    ``metadata`` replaces ``run/input.json`` when the caller stages a modified view.
+    """
     stage = stage or run / ".generation"
     stage.mkdir(mode=0o700)
     shutil.copy2(run / "transcript.md", stage / "transcript.md")
-    metadata = (
-        json.loads((run / "input.json").read_text(encoding="utf-8"))
-        if (run / "input.json").exists() else {}
-    )
+    if metadata is None:
+        metadata = (
+            json.loads((run / "input.json").read_text(encoding="utf-8"))
+            if (run / "input.json").exists() else {}
+        )
     (stage / "input.json").write_text(
         json.dumps(
-            {key: metadata[key] for key in ("url", "video_id", "report_mode") if key in metadata},
+            {key: metadata[key] for key in (
+                "url", "video_id", "report_mode", "diagrams", "term_correction",
+                "diagram_model_selection",
+                "search_provider", "search_model",
+                "title", "uploader", "visual_enhancement",
+            )
+             if key in metadata},
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+    if metadata.get("visual_enhancement"):
+        (stage / "visual").mkdir()
+        shutil.copy2(run / "visual" / "observations.jsonl", stage / "visual" / "observations.jsonl")
     info = run / "download" / "source.info.json"
     if info.is_file():
         source = json.loads(info.read_text(encoding="utf-8"))
@@ -46,6 +60,8 @@ def stage_inputs(run: Path, stage: Path | None = None) -> Path:
             json.dumps(
                 {
                     "description": source.get("description"),
+                    **({key: source.get(key) for key in ("title", "uploader")}
+                       if metadata.get("term_correction") else {}),
                 },
                 ensure_ascii=False,
             ),
@@ -115,6 +131,22 @@ def launch_command(stage: Path, config: Path, pi_command: list[str], deadline: f
     name = "video-report-task-" + uuid.uuid4().hex
     expires = time.time() + max(0, deadline - time.monotonic())
     image = os.getenv("PI_TASK_IMAGE", "video-report-agent:linux-amd64")
+    metadata = json.loads((stage / "input.json").read_text())
+    search_env = []
+    key_name = "DEEPSEEK_SEARCH_API_KEY"
+    if metadata.get("term_correction", False):
+        search = search_config(metadata.get("search_provider", "deepseek"),
+                               metadata.get("search_model", "gpt-6.1-sol"))
+        provider = search["search_provider"]
+        key_name = f"{provider.upper()}_SEARCH_API_KEY"
+        key = os.getenv(key_name) or os.getenv(f"{provider.upper()}_API_KEY")
+        search_env = [f"TERM_SEARCH_PROVIDER={provider}"]
+        if provider == "openai":
+            search_env.append(f"OPENAI_SEARCH_MODEL={search['search_model']}")
+        if key:
+            key_path = config / "term-search-key"
+            key_path.write_text(key)
+            key_path.chmod(0o600)
     task_env = [
         "HOME=/tmp/home",
         f"PATH={IMAGE_PATH}",
@@ -122,6 +154,7 @@ def launch_command(stage: Path, config: Path, pi_command: list[str], deadline: f
         "PLAYWRIGHT_BROWSERS_PATH=/opt/playwright",
         f"VIDEO_REPORT_PYTHON={IMAGE_PYTHON}",
         "PI_CODING_AGENT_DIR=/tmp/pi-agent",
+        *search_env,
     ]
     create = [
         "docker",
@@ -171,7 +204,9 @@ def launch_command(stage: Path, config: Path, pi_command: list[str], deadline: f
         *task_env,
         "sh",
         "-c",
-        'mkdir -p "$HOME" /tmp/pi-agent; cp /pi-config/* /tmp/pi-agent/; exec "$@"',
+        'mkdir -p "$HOME" /tmp/pi-agent; cp /pi-config/*.json /tmp/pi-agent/; '
+        'if [ -f /pi-config/term-search-key ]; then '
+        f'export {key_name}="$(cat /pi-config/term-search-key)"; fi; exec "$@"',
         "task-pi",
         *pi_command,
     ]

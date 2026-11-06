@@ -111,6 +111,13 @@ def test_youtube_rejects_bilibili_sources_before_creating_run(tmp_path, sources)
     assert not list(tmp_path.iterdir())
 
 
+def test_youtube_rejects_visual_enhancement_before_creating_run(tmp_path):
+    # The visual stage fetches its video track through the Bilibili API.
+    with pytest.raises(ValueError, match="画面辅助理解.*Bilibili"):
+        pipeline.create_run(tmp_path, URL, visual_enhancement=True)
+    assert not list(tmp_path.iterdir())
+
+
 def test_transcribe_cli_does_not_require_report_model(tmp_path, monkeypatch, local_stages):
     monkeypatch.setattr(cli, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(cli, "generate", pipeline.generate)
